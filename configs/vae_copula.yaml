@@ -1,0 +1,46 @@
+# VAE + Copula configuration
+# Extends default.yaml
+
+defaults:
+  - default
+
+model:
+  name: "vae_copula"
+  module: "synfin.models.vae_copula.vae"
+  class: "VAECopula"
+
+  # Encoder / Decoder architecture
+  rnn_type: "lstm"            # "gru" or "lstm"
+  encoder_hidden_dim: 128
+  encoder_num_layers: 2
+  latent_dim: 32
+  decoder_hidden_dim: 128
+  decoder_num_layers: 2
+  dropout: 0.1
+
+  # Copula settings
+  copula:
+    type: "gaussian"          # "gaussian" or "student_t"
+    df: 4                     # Degrees of freedom for Student-t copula
+    fit_marginals: true       # Fit marginal distributions per feature
+
+training:
+  epochs: 300
+  lr: 1.0e-3
+  lr_scheduler: "reduce_on_plateau"
+  lr_scheduler_patience: 20
+  lr_scheduler_factor: 0.5
+  batch_size: 128
+  gradient_clip: 1.0
+
+  # ELBO weights
+  kl_weight: 1.0              # Beta-VAE parameter (1.0 = standard VAE)
+  kl_annealing: true          # Anneal KL weight from 0 to kl_weight
+  kl_annealing_epochs: 50
+  reconstruction_loss: "mse"  # "mse" or "mae"
+
+generation:
+  num_samples: 1000
+  seq_length: 30
+  use_copula: true            # Use copula for correlated sampling
+  temperature: 1.0            # Latent space sampling temperature

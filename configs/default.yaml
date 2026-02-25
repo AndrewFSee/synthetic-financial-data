@@ -1,0 +1,58 @@
+# Default configuration shared across all models
+
+data:
+  tickers:
+    - AAPL
+    - MSFT
+    - GOOGL
+  start_date: "2015-01-01"
+  end_date: "2024-12-31"
+  interval: "1d"
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  synthetic_dir: "data/synthetic"
+
+  # Feature selection
+  features:
+    - Open
+    - High
+    - Low
+    - Close
+    - Volume
+    - LogReturn
+    - LogVolume
+    - DollarVolume
+
+  # Technical indicators (optional)
+  use_rsi: true
+  use_macd: true
+  use_bollinger: true
+  use_atr: true
+
+  # Preprocessing
+  normalization: "minmax"   # "minmax" or "zscore"
+  window_size: 30
+  train_ratio: 0.7
+  val_ratio: 0.15
+  test_ratio: 0.15
+
+training:
+  seed: 42
+  device: "auto"   # "auto", "cpu", "cuda", "mps"
+  batch_size: 64
+  num_workers: 4
+  log_interval: 10
+  checkpoint_dir: "checkpoints"
+  log_dir: "logs"
+  use_tensorboard: true
+  use_wandb: false
+  wandb_project: "synfin"
+
+evaluation:
+  output_dir: "reports"
+  n_bootstrap: 1000
+  mmd_kernel: "rbf"
+  mmd_bandwidth: 1.0
+  ks_alpha: 0.05
+  tstr_classifier: "logistic"
+  n_neighbors: 5

@@ -1,0 +1,45 @@
+# TimeGAN-specific configuration
+# Extends default.yaml
+
+defaults:
+  - default
+
+model:
+  name: "timegan"
+  module: "synfin.models.timegan.timegan"
+  class: "TimeGAN"
+
+  # Architecture
+  hidden_dim: 24
+  num_layers: 3
+  module_dim: 24      # Embedding/latent dimension
+  rnn_type: "gru"     # "gru" or "lstm"
+  dropout: 0.0
+
+training:
+  # Phase 1: Autoencoder pretraining
+  autoencoder_epochs: 200
+  autoencoder_lr: 1.0e-3
+
+  # Phase 2: Supervisor pretraining
+  supervisor_epochs: 200
+  supervisor_lr: 1.0e-3
+
+  # Phase 3: Joint adversarial training
+  joint_epochs: 300
+  generator_lr: 1.0e-4
+  discriminator_lr: 1.0e-4
+  joint_lr: 1.0e-4
+
+  # Loss weights
+  lambda_e: 10.0    # Embedding/recovery loss weight
+  lambda_s: 10.0    # Supervisor loss weight
+  gamma: 1.0        # Generator/discriminator balance
+
+  batch_size: 128
+  gradient_clip: 1.0
+
+generation:
+  num_samples: 1000
+  seq_length: 30
+  noise_dim: 24
