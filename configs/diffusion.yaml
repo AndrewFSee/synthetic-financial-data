@@ -1,0 +1,53 @@
+# Diffusion Model (DDPM) configuration
+# Extends default.yaml
+
+defaults:
+  - default
+
+model:
+  name: "diffusion"
+  module: "synfin.models.diffusion.diffusion"
+  class: "DiffusionModel"
+
+  # Noise schedule
+  noise_schedule: "cosine"   # "linear" or "cosine"
+  num_timesteps: 1000
+  beta_start: 1.0e-4
+  beta_end: 0.02
+
+  # Denoiser architecture (U-Net or Transformer)
+  denoiser_type: "unet"      # "unet" or "transformer"
+
+  # U-Net settings
+  unet:
+    in_channels: 8            # Number of features
+    hidden_dims: [64, 128, 256, 128, 64]
+    time_embed_dim: 128
+    num_res_blocks: 2
+    dropout: 0.1
+    group_norm_groups: 8
+
+  # Transformer denoiser settings
+  transformer:
+    d_model: 128
+    nhead: 8
+    num_encoder_layers: 6
+    dim_feedforward: 512
+    dropout: 0.1
+    time_embed_dim: 128
+
+training:
+  epochs: 500
+  lr: 2.0e-4
+  lr_scheduler: "cosine"
+  warmup_steps: 1000
+  batch_size: 128
+  gradient_clip: 1.0
+  ema_decay: 0.9999           # Exponential moving average for stable sampling
+
+generation:
+  sampler: "ddim"             # "ddpm" or "ddim"
+  ddim_steps: 50              # DDIM accelerated sampling steps
+  num_samples: 1000
+  seq_length: 30
+  guidance_scale: 1.0
