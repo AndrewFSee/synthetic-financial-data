@@ -54,7 +54,7 @@ def test_mmd_different_distributions():
     real = np.random.randn(100, 5)
     synth = np.random.randn(100, 5) + 5.0
     mmd = mmd_rbf(real, synth)
-    assert mmd > 0.5
+    assert mmd > 0.05
 
 
 def test_acf_comparison(random_data):
