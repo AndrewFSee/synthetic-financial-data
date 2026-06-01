@@ -1,0 +1,49 @@
+# Diffusion-TS configuration (interpretable transformer diffusion)
+# Extends default.yaml
+#
+# Reference: Yuan & Qiao, "Diffusion-TS: Interpretable Diffusion for General
+# Time Series Generation", ICLR 2024 (https://arxiv.org/abs/2403.01742).
+
+defaults:
+  - default
+
+model:
+  name: "diffusion_ts"
+  module: "synfin.models.diffusion_ts.diffusion_ts"
+  class: "DiffusionTS"
+
+  # Noise schedule
+  noise_schedule: "cosine"    # "linear" or "cosine"
+  num_timesteps: 1000
+  beta_start: 1.0e-4
+  beta_end: 0.02
+
+  # Transformer denoiser
+  d_model: 128
+  n_heads: 8
+  n_layers: 3
+  dim_feedforward: 256
+  dropout: 0.1
+  time_embed_dim: 128
+
+  # Interpretable seasonal-trend decomposition heads
+  trend_degree: 3             # polynomial degree for the trend component
+  num_harmonics: 6            # number of Fourier harmonics for seasonality
+
+  # Combined objective
+  fourier_loss_weight: 0.1    # lambda on the frequency-domain (FFT) loss term
+
+training:
+  epochs: 500
+  lr: 2.0e-4
+  lr_scheduler: "cosine"
+  warmup_steps: 1000
+  batch_size: 128
+  gradient_clip: 1.0
+  ema_decay: 0.9999
+
+generation:
+  sampler: "ddim"             # "ddpm" or "ddim"
+  ddim_steps: 50
+  num_samples: 1000
+  seq_length: 30

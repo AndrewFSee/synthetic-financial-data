@@ -72,7 +72,7 @@ def compute_all_metrics(
     # --- Stylized facts (use 5th feature = LogReturn if available) ---
     n_features = real.shape[-1]
     ret_idx = min(5, n_features - 1)
-    vol_idx = min(6, n_features - 1)
+    min(6, n_features - 1)
     vol_col = min(4, n_features - 1)
 
     real_returns = real_2d[:, ret_idx]
@@ -81,9 +81,7 @@ def compute_all_metrics(
     real_vol = np.abs(real_returns)
 
     logger.info("Checking stylized facts...")
-    report["stylized_facts_real"] = check_all_stylized_facts(
-        real_returns, real_volume, real_vol
-    )
+    report["stylized_facts_real"] = check_all_stylized_facts(real_returns, real_volume, real_vol)
     report["stylized_facts_synthetic"] = check_all_stylized_facts(
         synth_returns, real_volume, real_vol
     )
@@ -126,10 +124,7 @@ def _compute_realism_score(report: Dict) -> float:
 
     # KS test: fraction of features with p_value > 0.05 (fail to reject H0)
     if "ks_tests" in report:
-        ks_pass = [
-            1.0 if v["p_value"] > 0.05 else 0.0
-            for v in report["ks_tests"].values()
-        ]
+        ks_pass = [1.0 if v["p_value"] > 0.05 else 0.0 for v in report["ks_tests"].values()]
         if ks_pass:
             scores.append(np.mean(ks_pass))
 

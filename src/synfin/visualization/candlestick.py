@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 try:
     import mplfinance as mpf
+
     _HAS_MPF = True
 except ImportError:
     _HAS_MPF = False

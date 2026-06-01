@@ -41,7 +41,8 @@ def plot_time_series(
         figsize = (14, 3 * min(n_features, 5))
 
     fig, axes = plt.subplots(
-        min(n_features, 5), 2,
+        min(n_features, 5),
+        2,
         figsize=figsize,
         sharex=True,
     )

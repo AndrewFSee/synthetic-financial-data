@@ -1,4 +1,11 @@
-"""Sampling / generation logic for trained diffusion models."""
+"""Sampling for the x0-predicting Diffusion-TS model.
+
+The vanilla DDPM sampler in :mod:`synfin.models.diffusion.sampler` assumes the
+network predicts the noise epsilon. Diffusion-TS predicts the clean signal x0
+instead, so the reverse step is expressed via the closed-form posterior mean
+``q(x_{t-1} | x_t, x0)``. The public ``sample()`` signature matches the vanilla
+sampler so :mod:`scripts.generate` can treat both models uniformly.
+"""
 
 from __future__ import annotations
 
@@ -7,22 +14,22 @@ import logging
 import torch
 from torch import Tensor
 
-from synfin.models.diffusion.diffusion import DiffusionModel
+from synfin.models.diffusion_ts.diffusion_ts import DiffusionTS
 
 logger = logging.getLogger(__name__)
 
 
 @torch.no_grad()
 def ddpm_sample(
-    model: DiffusionModel,
+    model: DiffusionTS,
     num_samples: int,
     seq_length: int,
     device: torch.device = torch.device("cpu"),
 ) -> Tensor:
-    """Generate samples using full DDPM reverse chain.
+    """Generate samples using the full DDPM reverse chain (x0-parameterized).
 
     Args:
-        model: Trained DiffusionModel.
+        model: Trained DiffusionTS model.
         num_samples: Number of sequences to generate.
         seq_length: Sequence length.
         device: Compute device.
@@ -31,61 +38,63 @@ def ddpm_sample(
         Generated sequences, shape (num_samples, seq_length, in_channels).
     """
     model.eval()
-    in_channels = model.in_channels
-    x = torch.randn(num_samples, seq_length, in_channels, device=device)
+    x = torch.randn(num_samples, seq_length, model.in_channels, device=device)
 
     for t_idx in reversed(range(model.num_timesteps)):
         t_batch = torch.full((num_samples,), t_idx, device=device, dtype=torch.long)
-        predicted_noise = model.denoiser(x, t_batch)
+        x0_pred = model.predict_x0(x, t_batch)
 
-        betas_t = model.betas[t_idx]  # type: ignore[index]
-        sqrt_recip_alpha = torch.sqrt(1.0 / model.alphas[t_idx])  # type: ignore[index]
-        sqrt_one_minus_alpha_bar = model.sqrt_one_minus_alphas_cumprod[t_idx]  # type: ignore[index]
+        beta_t = model.betas[t_idx]  # type: ignore[index]
+        alpha_bar_t = model.alphas_cumprod[t_idx]  # type: ignore[index]
+        alpha_bar_prev = model.alphas_cumprod_prev[t_idx]  # type: ignore[index]
+        alpha_t = model.alphas[t_idx]  # type: ignore[index]
 
-        x = sqrt_recip_alpha * (x - betas_t / sqrt_one_minus_alpha_bar * predicted_noise)
+        # Posterior mean of q(x_{t-1} | x_t, x0).
+        coef_x0 = beta_t * torch.sqrt(alpha_bar_prev) / (1.0 - alpha_bar_t)
+        coef_xt = (1.0 - alpha_bar_prev) * torch.sqrt(alpha_t) / (1.0 - alpha_bar_t)
+        mean = coef_x0 * x0_pred + coef_xt * x
 
         if t_idx > 0:
-            posterior_var = model.posterior_variance[t_idx]  # type: ignore[index]
-            x = x + torch.sqrt(posterior_var) * torch.randn_like(x)
+            var = model.posterior_variance[t_idx]  # type: ignore[index]
+            x = mean + torch.sqrt(var) * torch.randn_like(x)
+        else:
+            x = mean
 
     return x
 
 
 @torch.no_grad()
 def ddim_sample(
-    model: DiffusionModel,
+    model: DiffusionTS,
     num_samples: int,
     seq_length: int,
     num_steps: int = 50,
     eta: float = 0.0,
     device: torch.device = torch.device("cpu"),
 ) -> Tensor:
-    """Generate samples using DDIM (accelerated, fewer steps).
+    """Generate samples using DDIM (accelerated, x0-parameterized).
 
     Args:
-        model: Trained DiffusionModel.
+        model: Trained DiffusionTS model.
         num_samples: Number of sequences to generate.
         seq_length: Sequence length.
         num_steps: Number of DDIM sampling steps (< num_timesteps).
-        eta: Stochasticity parameter (0 = deterministic, 1 = DDPM).
+        eta: Stochasticity (0 = deterministic, 1 = DDPM-like).
         device: Compute device.
 
     Returns:
         Generated sequences, shape (num_samples, seq_length, in_channels).
     """
     model.eval()
-    in_channels = model.in_channels
     T = model.num_timesteps
-
-    # Select evenly-spaced subset of timesteps
-    step_size = T // num_steps
+    step_size = max(T // num_steps, 1)
     timesteps = list(reversed(range(0, T, step_size)))[:num_steps]
 
-    x = torch.randn(num_samples, seq_length, in_channels, device=device)
+    x = torch.randn(num_samples, seq_length, model.in_channels, device=device)
 
     for i, t_idx in enumerate(timesteps):
         t_batch = torch.full((num_samples,), t_idx, device=device, dtype=torch.long)
-        predicted_noise = model.denoiser(x, t_batch)
+        x0_pred = model.predict_x0(x, t_batch)
 
         alpha_bar_t = model.alphas_cumprod[t_idx]  # type: ignore[index]
         alpha_bar_prev = (
@@ -94,14 +103,14 @@ def ddim_sample(
             else torch.tensor(1.0, device=device)
         )
 
-        # DDIM update
-        x0_pred = (x - torch.sqrt(1 - alpha_bar_t) * predicted_noise) / torch.sqrt(alpha_bar_t)
+        # Recover the implied noise from the x0 prediction, then re-noise.
+        eps = (x - torch.sqrt(alpha_bar_t) * x0_pred) / torch.sqrt(1.0 - alpha_bar_t)
         sigma = (
             eta
-            * torch.sqrt((1 - alpha_bar_prev) / (1 - alpha_bar_t))
-            * torch.sqrt(1 - alpha_bar_t / alpha_bar_prev)
+            * torch.sqrt((1.0 - alpha_bar_prev) / (1.0 - alpha_bar_t))
+            * torch.sqrt(1.0 - alpha_bar_t / alpha_bar_prev)
         )
-        direction = torch.sqrt(1 - alpha_bar_prev - sigma**2) * predicted_noise
+        direction = torch.sqrt(1.0 - alpha_bar_prev - sigma**2) * eps
         noise = sigma * torch.randn_like(x) if eta > 0 else 0.0
         x = torch.sqrt(alpha_bar_prev) * x0_pred + direction + noise
 
@@ -109,21 +118,21 @@ def ddim_sample(
 
 
 def sample(
-    model: DiffusionModel,
+    model: DiffusionTS,
     num_samples: int,
     seq_length: int,
     method: str = "ddim",
     ddim_steps: int = 50,
     device: torch.device = torch.device("cpu"),
 ) -> Tensor:
-    """Unified sampling interface.
+    """Unified sampling interface (matches the vanilla diffusion sampler).
 
     Args:
-        model: Trained DiffusionModel.
+        model: Trained DiffusionTS model.
         num_samples: Number of sequences to generate.
         seq_length: Sequence length.
-        method: Sampling method ("ddpm" or "ddim").
-        ddim_steps: Number of DDIM steps (only used for method="ddim").
+        method: "ddpm" or "ddim".
+        ddim_steps: Number of DDIM steps (only used when method="ddim").
         device: Compute device.
 
     Returns:

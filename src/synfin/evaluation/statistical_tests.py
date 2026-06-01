@@ -6,7 +6,6 @@ import logging
 from typing import Dict, List, Optional
 
 import numpy as np
-from scipy import stats
 from scipy.stats import ks_2samp
 
 logger = logging.getLogger(__name__)
@@ -63,8 +62,8 @@ def mmd_rbf(
 
     def rbf_kernel(x: np.ndarray, y: np.ndarray) -> np.ndarray:
         diff = x[:, None, :] - y[None, :, :]
-        dist_sq = (diff ** 2).sum(axis=-1)
-        return np.exp(-dist_sq / (2 * bandwidth ** 2))
+        dist_sq = (diff**2).sum(axis=-1)
+        return np.exp(-dist_sq / (2 * bandwidth**2))
 
     k_xx = rbf_kernel(real, real).mean()
     k_yy = rbf_kernel(synthetic, synthetic).mean()

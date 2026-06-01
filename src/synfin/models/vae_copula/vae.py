@@ -147,9 +147,7 @@ class VAECopula(nn.Module):
         Returns:
             Training history dict.
         """
-        histories: dict[str, list[float]] = {
-            "loss": [], "recon_loss": [], "kl_loss": []
-        }
+        histories: dict[str, list[float]] = {"loss": [], "recon_loss": [], "kl_loss": []}
 
         for epoch in range(epochs):
             # KL annealing
@@ -179,8 +177,11 @@ class VAECopula(nn.Module):
             if (epoch + 1) % 10 == 0:
                 logger.info(
                     "[VAE] Epoch %d/%d  loss=%.4f  recon=%.4f  kl=%.4f",
-                    epoch + 1, epochs,
-                    epoch_loss / n, epoch_recon / n, epoch_kl / n,
+                    epoch + 1,
+                    epochs,
+                    epoch_loss / n,
+                    epoch_recon / n,
+                    epoch_kl / n,
                 )
 
         return histories

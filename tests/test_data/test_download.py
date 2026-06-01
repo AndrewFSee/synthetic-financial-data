@@ -1,13 +1,11 @@
 """Tests for data download module."""
 
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+
 import pandas as pd
 import pytest
-from unittest.mock import MagicMock, patch
-from pathlib import Path
-import tempfile
-import sys
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 from synfin.data.download import download_ohlcv, load_ohlcv
 
@@ -16,6 +14,7 @@ from synfin.data.download import download_ohlcv, load_ohlcv
 def sample_ohlcv_df():
     """Create a sample OHLCV DataFrame."""
     import numpy as np
+
     dates = pd.date_range("2020-01-01", periods=100, freq="B")
     np.random.seed(42)
     prices = 100 + np.cumsum(np.random.randn(100) * 0.5)

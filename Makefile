@@ -1,4 +1,4 @@
-.PHONY: install install-dev download train-timegan train-diffusion train-vae generate evaluate test lint clean all help
+.PHONY: install install-dev download train-timegan train-diffusion train-diffusion-ts train-vae generate evaluate smoke test lint clean all help
 
 PYTHON := python
 PIP := pip
@@ -13,10 +13,12 @@ help:
 	@echo "  install-dev      Install dev dependencies (includes testing, linting)"
 	@echo "  download         Download financial data"
 	@echo "  train-timegan    Train the TimeGAN model"
-	@echo "  train-diffusion  Train the Diffusion model"
+	@echo "  train-diffusion  Train the Diffusion (DDPM) model"
+	@echo "  train-diffusion-ts Train the Diffusion-TS model (SOTA)"
 	@echo "  train-vae        Train the VAE+Copula model"
 	@echo "  generate         Generate synthetic data"
 	@echo "  evaluate         Run full evaluation suite"
+	@echo "  smoke            Run end-to-end smoke test on dummy data (no network)"
 	@echo "  test             Run unit tests"
 	@echo "  lint             Run linters (flake8, black, isort)"
 	@echo "  clean            Clean generated files and caches"
@@ -47,6 +49,11 @@ train-diffusion:
 		--model diffusion \
 		--config $(CONFIG_DIR)/diffusion.yaml
 
+train-diffusion-ts:
+	$(PYTHON) scripts/train.py \
+		--model diffusion_ts \
+		--config $(CONFIG_DIR)/diffusion_ts.yaml
+
 train-vae:
 	$(PYTHON) scripts/train.py \
 		--model vae_copula \
@@ -64,6 +71,9 @@ evaluate:
 		--real-data $(DATA_DIR)/processed/AAPL.parquet \
 		--synthetic-data $(DATA_DIR)/synthetic/timegan_AAPL.parquet \
 		--output $(REPORT_DIR)/
+
+smoke:
+	$(PYTHON) scripts/smoke_test.py
 
 test:
 	$(PYTHON) -m pytest tests/ -v --tb=short

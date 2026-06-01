@@ -67,13 +67,11 @@ class MultiTickerDataset(Dataset):
         for i, ds in enumerate(datasets[1:], 1):
             if ds.num_features != ref_features:
                 raise ValueError(
-                    f"Dataset {i} has {ds.num_features} features, "
-                    f"expected {ref_features}."
+                    f"Dataset {i} has {ds.num_features} features, " f"expected {ref_features}."
                 )
             if ds.seq_length != ref_seq_len:
                 raise ValueError(
-                    f"Dataset {i} has seq_length {ds.seq_length}, "
-                    f"expected {ref_seq_len}."
+                    f"Dataset {i} has seq_length {ds.seq_length}, " f"expected {ref_seq_len}."
                 )
 
         self.datasets = datasets

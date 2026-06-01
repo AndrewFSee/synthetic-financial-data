@@ -226,13 +226,16 @@ class TimeGAN(nn.Module):
 
                 # Moments matching
                 g_loss_v1 = torch.mean(
-                    torch.abs(torch.sqrt(h_hat.var(dim=0) + 1e-6) -
-                              torch.sqrt(h.var(dim=0) + 1e-6))
+                    torch.abs(torch.sqrt(h_hat.var(dim=0) + 1e-6) - torch.sqrt(h.var(dim=0) + 1e-6))
                 )
                 g_loss_v2 = torch.mean(torch.abs(h_hat.mean(dim=0) - h.mean(dim=0)))
-                g_loss = (g_loss_u + gamma * g_loss_u +
-                          lambda_s * torch.sqrt(g_loss_s) +
-                          g_loss_v1 + g_loss_v2)
+                g_loss = (
+                    g_loss_u
+                    + gamma * g_loss_u
+                    + lambda_s * torch.sqrt(g_loss_s)
+                    + g_loss_v1
+                    + g_loss_v2
+                )
                 g_loss.backward()
                 optimizer_g.step()
 
@@ -274,8 +277,11 @@ class TimeGAN(nn.Module):
             if (epoch + 1) % 10 == 0:
                 logger.info(
                     "[Joint] Epoch %d/%d  G=%.4f  D=%.4f  E=%.4f",
-                    epoch + 1, epochs,
-                    g_loss_ep / n, d_loss_ep / n, e_loss_ep / n,
+                    epoch + 1,
+                    epochs,
+                    g_loss_ep / n,
+                    d_loss_ep / n,
+                    e_loss_ep / n,
                 )
 
         return histories

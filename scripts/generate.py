@@ -5,13 +5,9 @@ from __future__ import annotations
 
 import argparse
 import logging
-import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
 import numpy as np
-import pandas as pd
 import torch
 
 from synfin.utils.device import get_device
@@ -25,8 +21,9 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "--model", required=True,
-        choices=["timegan", "diffusion", "vae_copula"],
+        "--model",
+        required=True,
+        choices=["timegan", "diffusion", "diffusion_ts", "vae_copula"],
     )
     parser.add_argument("--checkpoint", required=True, help="Path to model checkpoint (.pt)")
     parser.add_argument("--num-samples", type=int, default=1000)
@@ -51,12 +48,19 @@ def main() -> None:
     # Load model
     if args.model == "timegan":
         from synfin.models.timegan import TimeGAN
+
         model = TimeGAN(input_dim=args.input_dim)
     elif args.model == "diffusion":
         from synfin.models.diffusion import DiffusionModel
+
         model = DiffusionModel(in_channels=args.input_dim, seq_length=args.seq_length)
+    elif args.model == "diffusion_ts":
+        from synfin.models.diffusion_ts import DiffusionTS
+
+        model = DiffusionTS(in_channels=args.input_dim, seq_length=args.seq_length)
     elif args.model == "vae_copula":
         from synfin.models.vae_copula import VAECopula
+
         model = VAECopula(input_dim=args.input_dim, seq_length=args.seq_length)
 
     ckpt = torch.load(args.checkpoint, map_location=device)
@@ -75,6 +79,11 @@ def main() -> None:
             samples = model.generate(args.num_samples, args.seq_length, device)
         elif args.model == "diffusion":
             from synfin.models.diffusion.sampler import sample
+
+            samples = sample(model, args.num_samples, args.seq_length, device=device)
+        elif args.model == "diffusion_ts":
+            from synfin.models.diffusion_ts.sampler import sample
+
             samples = sample(model, args.num_samples, args.seq_length, device=device)
         elif args.model == "vae_copula":
             samples = model.generate(args.num_samples, device)

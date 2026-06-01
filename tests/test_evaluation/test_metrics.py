@@ -2,14 +2,10 @@
 
 import numpy as np
 import pytest
-from pathlib import Path
-import sys
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
-
-from synfin.evaluation.statistical_tests import ks_test, mmd_rbf, acf_comparison
+from synfin.evaluation.privacy import distance_to_closest_record, nearest_neighbor_distance_ratio
+from synfin.evaluation.statistical_tests import acf_comparison, ks_test, mmd_rbf
 from synfin.evaluation.stylized_facts import check_fat_tails, check_volatility_clustering
-from synfin.evaluation.privacy import nearest_neighbor_distance_ratio, distance_to_closest_record
 
 
 @pytest.fixture

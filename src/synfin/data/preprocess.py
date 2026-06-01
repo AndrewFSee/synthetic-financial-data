@@ -120,9 +120,7 @@ def create_windows(
         windows.append(data[start : start + window_size])
 
     if not windows:
-        raise ValueError(
-            f"DataFrame too short ({n_steps} rows) for window_size={window_size}."
-        )
+        raise ValueError(f"DataFrame too short ({n_steps} rows) for window_size={window_size}.")
 
     return np.array(windows, dtype=np.float32)
 
@@ -178,8 +176,16 @@ def preprocess(
     df = compute_dollar_volume(df)
 
     if feature_cols is None:
-        feature_cols = ["Open", "High", "Low", "Close", "Volume",
-                        "LogReturn", "LogVolume", "DollarVolume"]
+        feature_cols = [
+            "Open",
+            "High",
+            "Low",
+            "Close",
+            "Volume",
+            "LogReturn",
+            "LogVolume",
+            "DollarVolume",
+        ]
 
     # Keep only columns that exist
     feature_cols = [c for c in feature_cols if c in df.columns]
@@ -189,12 +195,12 @@ def preprocess(
     df_norm, scaler = normalize(df, method=normalization, feature_cols=feature_cols)
 
     # Create windows
-    windows = create_windows(df_norm, window_size=window_size,
-                             feature_cols=feature_cols, stride=stride)
+    windows = create_windows(
+        df_norm, window_size=window_size, feature_cols=feature_cols, stride=stride
+    )
 
     # Split
-    train, val, test = train_val_test_split(windows, train_ratio=train_ratio,
-                                            val_ratio=val_ratio)
+    train, val, test = train_val_test_split(windows, train_ratio=train_ratio, val_ratio=val_ratio)
 
     return {
         "train": train,

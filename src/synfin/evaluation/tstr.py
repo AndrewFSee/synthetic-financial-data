@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Dict, Optional, Tuple
+from typing import Dict, Tuple
 
 import numpy as np
 from sklearn.linear_model import LogisticRegression
@@ -71,12 +71,20 @@ def tstr_benchmark(
 
     X_synth, y_synth = _prepare_classification_data(synthetic_windows)
 
-    results = {}
+    results: Dict[str, Dict[str, float]] = {}
 
     for name, X_train, y_train in [
         ("trtr", X_train_real, y_train_real),
         ("tstr", X_synth, y_synth),
     ]:
+        # The classifier needs both up/down classes to train. An under-trained
+        # generator can emit a near-constant return sign, leaving a single class;
+        # skip that split gracefully instead of crashing the whole evaluation.
+        if len(np.unique(y_train)) < 2:
+            logger.warning("[TSTR] %s skipped: training labels have a single class.", name.upper())
+            results[name] = {"skipped": 1.0}
+            continue
+
         scaler = StandardScaler()
         X_tr = scaler.fit_transform(X_train)
         X_te = scaler.transform(X_test)
@@ -94,10 +102,15 @@ def tstr_benchmark(
         }
         logger.info(
             "[TSTR] %s — accuracy=%.3f  f1=%.3f  auc=%.3f",
-            name.upper(), results[name]["accuracy"], results[name]["f1"], results[name]["auc"],
+            name.upper(),
+            results[name]["accuracy"],
+            results[name]["f1"],
+            results[name]["auc"],
         )
 
-    results["tstr_gap"] = {
-        k: results["trtr"][k] - results["tstr"][k] for k in ["accuracy", "f1", "auc"]
-    }
+    # Only report the gap when both splits produced real metrics.
+    if "accuracy" in results.get("trtr", {}) and "accuracy" in results.get("tstr", {}):
+        results["tstr_gap"] = {
+            k: results["trtr"][k] - results["tstr"][k] for k in ["accuracy", "f1", "auc"]
+        }
     return results

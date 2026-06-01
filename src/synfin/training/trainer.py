@@ -53,6 +53,7 @@ class Trainer:
         if use_tensorboard:
             try:
                 from torch.utils.tensorboard import SummaryWriter
+
                 self.writer = SummaryWriter(log_dir=log_dir)
             except ImportError:
                 logger.warning("TensorBoard not available. Skipping TB logging.")
@@ -130,7 +131,8 @@ class Trainer:
             if (epoch + 1) % log_interval == 0:
                 logger.info(
                     "Epoch %d/%d  " + "  ".join(f"{k}={v:.4f}" for k, v in metrics.items()),
-                    epoch + 1, epochs,
+                    epoch + 1,
+                    epochs,
                 )
 
         if self.writer:

@@ -3,19 +3,15 @@
 import numpy as np
 import pandas as pd
 import pytest
-from pathlib import Path
-import sys
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 from synfin.data.preprocess import (
+    compute_dollar_volume,
     compute_log_returns,
     compute_log_volume,
-    compute_dollar_volume,
-    normalize,
     create_windows,
-    train_val_test_split,
+    normalize,
     preprocess,
+    train_val_test_split,
 )
 
 

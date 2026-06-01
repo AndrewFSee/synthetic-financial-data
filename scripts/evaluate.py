@@ -5,10 +5,7 @@ from __future__ import annotations
 
 import argparse
 import logging
-import sys
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import numpy as np
 import pandas as pd
@@ -23,7 +20,9 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--real-data", required=True, help="Path to real data (parquet/npy)")
-    parser.add_argument("--synthetic-data", required=True, help="Path to synthetic data (parquet/npy)")
+    parser.add_argument(
+        "--synthetic-data", required=True, help="Path to synthetic data (parquet/npy)"
+    )
     parser.add_argument("--output", default="reports/", help="Output directory for reports")
     parser.add_argument("--window-size", type=int, default=30)
     parser.add_argument("--no-tstr", action="store_true", help="Skip TSTR benchmark")
@@ -45,7 +44,7 @@ def load_data(path: str, window_size: int) -> np.ndarray:
     if data.ndim == 2:
         # Create windows
         n = len(data) - window_size
-        windows = np.stack([data[i:i + window_size] for i in range(n)])
+        windows = np.stack([data[i : i + window_size] for i in range(n)])
         return windows
     return data
 
@@ -70,7 +69,7 @@ def main() -> None:
     )
 
     print("\n" + "=" * 60)
-    print(f"  EVALUATION REPORT")
+    print("  EVALUATION REPORT")
     print("=" * 60)
     print(f"  Overall Realism Score: {report['realism_score']:.3f} / 1.000")
     print(f"  MMD: {report['mmd']:.4f}")

@@ -1,17 +1,13 @@
 """Tests for VAE+Copula model."""
 
-import pytest
 import numpy as np
+import pytest
 import torch
-from pathlib import Path
-import sys
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 from synfin.models.vae_copula import VAECopula
-from synfin.models.vae_copula.encoder import Encoder
-from synfin.models.vae_copula.decoder import Decoder
 from synfin.models.vae_copula.copula import GaussianCopula, StudentTCopula, get_copula
+from synfin.models.vae_copula.decoder import Decoder
+from synfin.models.vae_copula.encoder import Encoder
 
 
 @pytest.fixture

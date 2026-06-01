@@ -2,16 +2,12 @@
 
 import pytest
 import torch
-from pathlib import Path
-import sys
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 from synfin.models.diffusion import DiffusionModel
 from synfin.models.diffusion.noise_schedule import (
-    linear_beta_schedule,
-    cosine_beta_schedule,
     compute_schedule_constants,
+    cosine_beta_schedule,
+    linear_beta_schedule,
 )
 from synfin.models.diffusion.sampler import sample
 
@@ -71,15 +67,11 @@ def test_diffusion_training_loss(small_diffusion):
 
 def test_diffusion_ddim_sample(small_diffusion):
     """DDIM sampler produces correct shape."""
-    samples = sample(
-        small_diffusion, num_samples=4, seq_length=10, method="ddim", ddim_steps=5
-    )
+    samples = sample(small_diffusion, num_samples=4, seq_length=10, method="ddim", ddim_steps=5)
     assert samples.shape == (4, 10, 5)
 
 
 def test_diffusion_ddpm_sample(small_diffusion):
     """DDPM sampler produces correct shape."""
-    samples = sample(
-        small_diffusion, num_samples=2, seq_length=10, method="ddpm"
-    )
+    samples = sample(small_diffusion, num_samples=2, seq_length=10, method="ddpm")
     assert samples.shape == (2, 10, 5)

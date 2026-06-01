@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -13,6 +12,7 @@ logger = logging.getLogger(__name__)
 # Try to import the 'ta' library for technical analysis
 try:
     import ta
+
     _HAS_TA = True
 except ImportError:
     _HAS_TA = False

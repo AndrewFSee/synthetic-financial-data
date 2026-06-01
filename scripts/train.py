@@ -8,8 +8,6 @@ import logging
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
 import torch
 from torch.utils.data import DataLoader
 
@@ -26,12 +24,14 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "--model", required=True,
-        choices=["timegan", "diffusion", "vae_copula"],
+        "--model",
+        required=True,
+        choices=["timegan", "diffusion", "diffusion_ts", "vae_copula"],
         help="Model architecture to train",
     )
     parser.add_argument(
-        "--config", required=True,
+        "--config",
+        required=True,
         help="Path to model config YAML file",
     )
     parser.add_argument("--default-config", default="configs/default.yaml")
@@ -45,17 +45,17 @@ def parse_args() -> argparse.Namespace:
 
 def load_data(args, cfg: dict):
     """Load preprocessed windows from disk or create dummy data."""
-    import numpy as np
     from synfin.data.preprocess import preprocess
-    from synfin.data.download import load_ohlcv
 
     data_path = Path(args.data_dir) / f"{args.ticker}.parquet"
     if data_path.exists():
         import pandas as pd
+
         df = pd.read_parquet(data_path)
     else:
         # Try raw data
         from synfin.data.download import load_ohlcv
+
         df = load_ohlcv(args.ticker, data_dir="data/raw")
         if df is None:
             logging.warning("No data found for %s. Using dummy data.", args.ticker)
@@ -78,6 +78,7 @@ def build_model(model_name: str, input_dim: int, cfg: dict, seq_length: int):
 
     if model_name == "timegan":
         from synfin.models.timegan import TimeGAN
+
         return TimeGAN(
             input_dim=input_dim,
             hidden_dim=model_cfg.get("hidden_dim", 24),
@@ -88,14 +89,33 @@ def build_model(model_name: str, input_dim: int, cfg: dict, seq_length: int):
         )
     elif model_name == "diffusion":
         from synfin.models.diffusion import DiffusionModel
+
         return DiffusionModel(
             in_channels=input_dim,
             seq_length=seq_length,
             num_timesteps=model_cfg.get("num_timesteps", 1000),
             noise_schedule=model_cfg.get("noise_schedule", "cosine"),
         )
+    elif model_name == "diffusion_ts":
+        from synfin.models.diffusion_ts import DiffusionTS
+
+        return DiffusionTS(
+            in_channels=input_dim,
+            seq_length=seq_length,
+            num_timesteps=model_cfg.get("num_timesteps", 1000),
+            noise_schedule=model_cfg.get("noise_schedule", "cosine"),
+            d_model=model_cfg.get("d_model", 128),
+            n_heads=model_cfg.get("n_heads", 8),
+            n_layers=model_cfg.get("n_layers", 3),
+            dim_feedforward=model_cfg.get("dim_feedforward", 256),
+            dropout=model_cfg.get("dropout", 0.1),
+            trend_degree=model_cfg.get("trend_degree", 3),
+            num_harmonics=model_cfg.get("num_harmonics", 6),
+            fourier_loss_weight=model_cfg.get("fourier_loss_weight", 0.1),
+        )
     elif model_name == "vae_copula":
         from synfin.models.vae_copula import VAECopula
+
         return VAECopula(
             input_dim=input_dim,
             hidden_dim=model_cfg.get("encoder_hidden_dim", 128),
@@ -142,14 +162,14 @@ def main() -> None:
 
     seq_length = train_windows.shape[1]
     input_dim = train_windows.shape[2]
-    logger.info("Data: %d train windows, seq_len=%d, features=%d",
-                len(train_ds), seq_length, input_dim)
+    logger.info(
+        "Data: %d train windows, seq_len=%d, features=%d", len(train_ds), seq_length, input_dim
+    )
 
     # Model
     model = build_model(args.model, input_dim, cfg, seq_length)
     model = model.to(device)
-    logger.info("Model: %s (%d parameters)",
-                args.model, sum(p.numel() for p in model.parameters()))
+    logger.info("Model: %s (%d parameters)", args.model, sum(p.numel() for p in model.parameters()))
 
     # Train
     train_cfg = cfg.get("training", {})
@@ -158,6 +178,8 @@ def main() -> None:
         _train_timegan(model, train_loader, train_cfg, device, args.checkpoint_dir)
     elif args.model == "diffusion":
         _train_diffusion(model, train_loader, val_loader, train_cfg, device, args.checkpoint_dir)
+    elif args.model == "diffusion_ts":
+        _train_diffusion_ts(model, train_loader, val_loader, train_cfg, device, args.checkpoint_dir)
     elif args.model == "vae_copula":
         _train_vae(model, train_loader, val_loader, train_cfg, device, args.checkpoint_dir)
 
@@ -193,7 +215,9 @@ def _train_timegan(model, train_loader, cfg, device, checkpoint_dir):
         lr=cfg.get("joint_lr", 1e-4),
     )
     logger.info("Phase 3: Joint training (%d epochs)", cfg.get("joint_epochs", 300))
-    model.train_joint(train_loader, g_opt, d_opt, e_opt, cfg.get("joint_epochs", 300), device=device)
+    model.train_joint(
+        train_loader, g_opt, d_opt, e_opt, cfg.get("joint_epochs", 300), device=device
+    )
 
     torch.save(model.state_dict(), Path(checkpoint_dir) / "timegan_best.pt")
     logger.info("Saved TimeGAN checkpoint.")
@@ -202,6 +226,7 @@ def _train_timegan(model, train_loader, cfg, device, checkpoint_dir):
 def _train_diffusion(model, train_loader, val_loader, cfg, device, checkpoint_dir):
     """Train diffusion model."""
     from synfin.training.trainer import Trainer
+
     Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.get("lr", 2e-4))
     trainer = Trainer(model, optimizer, device=device, checkpoint_dir=checkpoint_dir)
@@ -209,9 +234,21 @@ def _train_diffusion(model, train_loader, val_loader, cfg, device, checkpoint_di
     torch.save(model.state_dict(), Path(checkpoint_dir) / "diffusion_best.pt")
 
 
+def _train_diffusion_ts(model, train_loader, val_loader, cfg, device, checkpoint_dir):
+    """Train the Diffusion-TS model (generic Trainer + model.training_loss)."""
+    from synfin.training.trainer import Trainer
+
+    Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.get("lr", 2e-4))
+    trainer = Trainer(model, optimizer, device=device, checkpoint_dir=checkpoint_dir)
+    trainer.train(train_loader, epochs=cfg.get("epochs", 500), val_loader=val_loader)
+    torch.save(model.state_dict(), Path(checkpoint_dir) / "diffusion_ts_best.pt")
+
+
 def _train_vae(model, train_loader, val_loader, cfg, device, checkpoint_dir):
     """Train VAE+Copula model."""
     from synfin.training.trainer import Trainer
+
     Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.get("lr", 1e-3))
 
@@ -221,8 +258,9 @@ def _train_vae(model, train_loader, val_loader, cfg, device, checkpoint_dir):
         return loss
 
     trainer = Trainer(model, optimizer, device=device, checkpoint_dir=checkpoint_dir)
-    trainer.train(train_loader, epochs=cfg.get("epochs", 300), val_loader=val_loader,
-                  loss_fn=vae_loss_fn)
+    trainer.train(
+        train_loader, epochs=cfg.get("epochs", 300), val_loader=val_loader, loss_fn=vae_loss_fn
+    )
     torch.save(model.state_dict(), Path(checkpoint_dir) / "vae_copula_best.pt")
 
 

@@ -51,7 +51,7 @@ def check_volatility_clustering(
         Dict with mean_abs_acf and mean_sq_acf at various lags.
     """
     abs_returns = np.abs(returns)
-    sq_returns = returns ** 2
+    sq_returns = returns**2
 
     def acf_mean(x: np.ndarray, max_lag: int) -> float:
         n = len(x)

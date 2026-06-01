@@ -68,7 +68,5 @@ def compute_schedule_constants(betas: Tensor) -> Dict[str, Tensor]:
         "log_one_minus_alphas_cumprod": torch.log(1.0 - alphas_cumprod),
         "sqrt_recip_alphas_cumprod": torch.sqrt(1.0 / alphas_cumprod),
         "sqrt_recipm1_alphas_cumprod": torch.sqrt(1.0 / alphas_cumprod - 1),
-        "posterior_variance": (
-            betas * (1.0 - alphas_cumprod_prev) / (1.0 - alphas_cumprod)
-        ),
+        "posterior_variance": (betas * (1.0 - alphas_cumprod_prev) / (1.0 - alphas_cumprod)),
     }

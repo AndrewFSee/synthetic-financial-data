@@ -5,11 +5,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import sys
-from pathlib import Path
-
-# Ensure src is on path when running as script
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from synfin.data.download import download_ohlcv
 from synfin.utils.logging import setup_logging
@@ -21,7 +16,9 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "--tickers", nargs="+", default=["AAPL", "MSFT", "GOOGL"],
+        "--tickers",
+        nargs="+",
+        default=["AAPL", "MSFT", "GOOGL"],
         help="Ticker symbols to download",
     )
     parser.add_argument("--start", default="2015-01-01", help="Start date (YYYY-MM-DD)")
@@ -29,7 +26,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--interval", default="1d", help="Data interval (1d, 1h, etc.)")
     parser.add_argument("--output-dir", default="data/raw", help="Output directory")
     parser.add_argument(
-        "--format", default="parquet", choices=["parquet", "csv"],
+        "--format",
+        default="parquet",
+        choices=["parquet", "csv"],
         help="File format to save data",
     )
     parser.add_argument("--log-level", default="INFO", help="Logging level")
@@ -43,7 +42,10 @@ def main() -> None:
 
     logger.info(
         "Downloading data for tickers: %s (%s to %s, interval=%s)",
-        args.tickers, args.start, args.end, args.interval,
+        args.tickers,
+        args.start,
+        args.end,
+        args.interval,
     )
 
     results = download_ohlcv(
