@@ -1,7 +1,7 @@
 """Interpretable seasonal-trend decomposition heads for Diffusion-TS.
 
 The denoiser predicts the *clean* signal ``x0`` as the sum of three
-interpretable components (Zhou et al., "Diffusion-TS", ICLR 2024):
+interpretable components (Yuan & Qiao, "Diffusion-TS", ICLR 2024):
 
     x0_hat = trend + seasonality + residual
 

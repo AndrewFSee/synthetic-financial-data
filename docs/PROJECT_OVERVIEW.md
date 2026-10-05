@@ -97,19 +97,22 @@ src/synfin/
     diffusion/   DDPM: UNet1D denoiser, noise schedules, DDPM/DDIM samplers
     diffusion_ts/ Diffusion-TS: transformer backbone, seasonal-trend decomposition, samplers
     vae_copula/  encoder, decoder, Gaussian/Student-t copula
-  training/      unified Trainer, losses, callbacks
+  training/      Trainer (grad clip, EMA, LR schedules, best-val restore), checkpoints, losses
+  structural_breaks/ labeled structural-break data generator + detector evaluation
+  cli/           synfin-download / -train / -generate / -evaluate / -structural-breaks
   evaluation/    statistical_tests, stylized_facts, tstr, privacy, metrics aggregator
   constraints/   OHLCV validity post-processing
   visualization/ candlestick, distributions, correlations, time-series
-  utils/         config (YAML merge), device, logging, seed
+  utils/         config (YAML merge + `defaults:`), device, logging, seed
 configs/         default.yaml + one YAML per model
-scripts/         download_data, train, generate, evaluate, smoke_test
-tests/           pytest suite (shape/correctness) per module
+scripts/         thin wrappers around synfin.cli, plus smoke_test
+tests/           pytest suite per module + end-to-end CLI pipeline test
 ```
 
 Data convention everywhere: tensors are `(batch, seq_len, features)`, default window = 30 days,
-8 features (Open, High, Low, Close, Volume, LogReturn, LogVolume, DollarVolume). Splits are
-**time-ordered** (train→val→test chronologically) to avoid look-ahead leakage.
+5 stationary features (LogReturn, OpenGap, HighRange, LowRange, LogVolumeRel) that map back to
+valid OHLCV bars. Rows are split **chronologically** (train→val→test) *before* the scaler is fit
+on training rows only, and each split is windowed separately, so nothing leaks across splits.
 
 ## Model 1 — TimeGAN (Yoon et al., NeurIPS 2019)
 
@@ -118,8 +121,10 @@ Five RNN modules operating in a learned latent space: **Embedder** `X→H`, **Re
 Three-phase training:
 1. **Autoencoder** — train Embedder+Recovery to reconstruct (`10·√MSE`).
 2. **Supervised** — train Supervisor to predict `h_t` from `h_{t-1}` in latent space.
-3. **Joint adversarial** — generator minimizes adversarial + supervised + moment-matching losses;
-   discriminator does standard BCE (with a `loss > 0.15` guard to keep it from overpowering G).
+3. **Joint adversarial** — generator minimizes adversarial losses on both the supervised latents
+   `Ĥ` and the raw generator output `Ê` (weighted by `gamma`), plus supervised + moment-matching
+   losses; the discriminator is trained against both kinds of fakes (with a `loss > 0.15` guard
+   to keep it from overpowering G).
 
 Strength: explicit temporal supervision. Weakness: adversarial training is unstable, and GANs are
 prone to mode collapse — which on financial data shows up as *under-dispersed tails*.
@@ -186,14 +191,19 @@ more than marginal sharpness.
 
 | Metric | What it checks | Why it matters here |
 |---|---|---|
-| **KS test** (per feature) | Marginal distribution match | Basic distributional fidelity |
-| **MMD** (RBF kernel) | Joint distribution distance | Single scalar for overall closeness |
-| **ACF comparison** | Autocorrelation at multiple lags | Volatility clustering lives in the ACF of |returns| |
-| **Stylized facts** | Fat tails (kurtosis), vol clustering, leverage | The financial fingerprint a model must reproduce |
-| **TSTR** | Train-on-synthetic / test-on-real classifier gap | Proves the synthetic data is *useful*, not just close |
-| **Privacy (NNDR, MIA)** | Memorization / membership inference | Guards against the model copying real records |
+| **KS statistic** (per feature, one timestep per window) | Marginal distribution match | Basic distributional fidelity |
+| **MMD²** (RBF, median-heuristic bandwidth) | Joint window distribution distance | Single scalar for overall closeness |
+| **ACF comparison** (pooled within windows) | Autocorrelation at multiple lags | Volatility clustering lives in the ACF of |returns| |
+| **Stylized facts** (on unscaled returns) | Fat tails, vol clustering, leverage, volume–volatility | The financial fingerprint a model must reproduce |
+| **TSTR** (next-step volatility task) | Train-on-synthetic / test-on-real AUC gap | Proves the synthetic data is *useful*, not just close |
+| **Privacy** (d1/d2 memorization rate, vs. an unseen real holdout) | Whether samples sit on one specific training record | Guards against the model copying real records |
+| **Collapse diagnostics** (spread, nearest-record coverage) | Too little spread, or too few distinct regions covered | Separates mode collapse from memorization, which raw distances confuse |
+| **Discriminative score** | CV AUC of a real-vs-synthetic classifier on window dynamics | The only check that catches i.i.d. noise with the right moments |
 
-These roll up into a single `realism_score ∈ [0,1]` for quick comparison across models.
+Columns are located by name, distance metrics use real-standardized features, and the five
+components (`1 − KS`, `1 − √MMD²`, TSTR gap score, privacy, discriminative) roll up into
+`realism_score ∈ [0,1]`. The report also carries a privacy verdict: `ok`, `collapse` or
+`memorization`.
 
 ## SOTA landscape — what we have vs. what's next
 
@@ -226,8 +236,8 @@ python scripts/smoke_test.py            # end-to-end train->generate->evaluate o
 
 # Real-data path (needs network):
 synfin-download --tickers AAPL MSFT --start 2015-01-01 --end 2024-12-31
-synfin-train    --model diffusion_ts --config configs/diffusion_ts.yaml
-synfin-generate --model diffusion_ts --checkpoint checkpoints/diffusion_ts_best.pt
-synfin-evaluate --real-data data/processed/AAPL.parquet \
-                --synthetic-data data/synthetic/diffusion_ts_synthetic.npy
+synfin-train    --model diffusion_ts --ticker AAPL
+synfin-generate --checkpoint checkpoints/diffusion_ts.pt
+synfin-evaluate --real-data data/processed/AAPL_windows.npz \
+                --synthetic-data data/synthetic/diffusion_ts_AAPL.npz
 ```

@@ -120,27 +120,3 @@ def load_ohlcv(
     if file_format == "parquet":
         return pd.read_parquet(filepath)
     return pd.read_csv(filepath, index_col="Date", parse_dates=True)
-
-
-def main() -> None:
-    """CLI entry point for downloading data."""
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Download OHLCV market data")
-    parser.add_argument("--tickers", nargs="+", required=True, help="Ticker symbols")
-    parser.add_argument("--start", default="2015-01-01", help="Start date (YYYY-MM-DD)")
-    parser.add_argument("--end", default="2024-12-31", help="End date (YYYY-MM-DD)")
-    parser.add_argument("--interval", default="1d", help="Data interval")
-    parser.add_argument("--output-dir", default="data/raw", help="Output directory")
-    parser.add_argument("--format", default="parquet", choices=["parquet", "csv"])
-    args = parser.parse_args()
-
-    logging.basicConfig(level=logging.INFO)
-    download_ohlcv(
-        tickers=args.tickers,
-        start=args.start,
-        end=args.end,
-        interval=args.interval,
-        output_dir=args.output_dir,
-        save_format=args.format,
-    )

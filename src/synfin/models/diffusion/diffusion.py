@@ -38,6 +38,7 @@ class DiffusionModel(nn.Module):
         time_embed_dim: Time embedding dimension.
         num_res_blocks: UNet residual blocks per level.
         dropout: Dropout rate.
+        groups: GroupNorm groups in the UNet.
     """
 
     def __init__(
@@ -52,6 +53,7 @@ class DiffusionModel(nn.Module):
         time_embed_dim: int = 128,
         num_res_blocks: int = 2,
         dropout: float = 0.1,
+        groups: int = 8,
     ) -> None:
         super().__init__()
         self.in_channels = in_channels
@@ -77,6 +79,7 @@ class DiffusionModel(nn.Module):
             time_embed_dim=time_embed_dim,
             num_res_blocks=num_res_blocks,
             dropout=dropout,
+            groups=groups,
         )
 
     # ------------------------------------------------------------------

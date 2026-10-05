@@ -20,34 +20,32 @@ import torch
 from torch.utils.data import DataLoader
 
 from synfin.data.dataset import OHLCVDataset
+from synfin.data.preprocess import RETURN_FEATURES
 from synfin.evaluation.metrics import compute_all_metrics
 from synfin.utils.seed import seed_everything
 
 # Small, fast configuration.
 N_WINDOWS = 80  # > 50 so the TSTR benchmark also exercises
 SEQ_LEN = 16
-N_FEATURES = 8
+N_FEATURES = len(RETURN_FEATURES)
 EPOCHS = 2
 
 logging.basicConfig(level=logging.WARNING, format="%(message)s")
 
 
 def make_dummy_data() -> np.ndarray:
-    """Create random-walk OHLCV-shaped windows resembling preprocessed data.
+    """Create windows shaped like the preprocessed ``returns`` feature set.
 
-    Channels mimic the real pipeline's 8 features; importantly, the LogReturn
-    channel (index 5) holds *signed* returns so the downstream TSTR classifier
-    sees both up/down classes, just like real data.
+    Channels follow RETURN_FEATURES (LogReturn, OpenGap, HighRange, LowRange,
+    LogVolumeRel), already standardized as the real pipeline does, with signed
+    returns so the downstream TSTR classifier sees both classes.
 
     Returns:
         Array of shape (N_WINDOWS, SEQ_LEN, N_FEATURES).
     """
     rng = np.random.default_rng(0)
-    steps = rng.normal(0, 0.02, size=(N_WINDOWS, SEQ_LEN, N_FEATURES))
-    walk = np.cumsum(steps, axis=1)
-    data = (walk - walk.min()) / (walk.max() - walk.min() + 1e-8)  # ~[0, 1]
-    # Index 5 = LogReturn: keep it signed (centered near zero) -> 2 TSTR classes.
-    data[:, :, 5] = steps[:, :, 5]
+    data = rng.standard_normal((N_WINDOWS, SEQ_LEN, N_FEATURES))
+    data[:, :, 2:4] = np.abs(data[:, :, 2:4])  # range features are non-negative
     return data.astype(np.float32)
 
 
@@ -137,6 +135,7 @@ def train_vae_copula(data, device):
     ).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=1e-3)
     model.training_step(_loader(data), opt, epochs=EPOCHS, kl_annealing=False, device=device)
+    model.fit_copula(_loader(data), device=device)
     return model.generate(N_WINDOWS, device=device).cpu().numpy()
 
 
@@ -166,7 +165,9 @@ def main() -> None:
         try:
             synthetic = trainer(real, device)
             assert synthetic.shape == real.shape, f"shape {synthetic.shape} != {real.shape}"
-            report = compute_all_metrics(real, synthetic, run_tstr=True)
+            report = compute_all_metrics(
+                real, synthetic, feature_names=RETURN_FEATURES, run_tstr=True
+            )
             print(
                 f"    OK  realism_score={report['realism_score']:.3f}  "
                 f"mmd={report['mmd']:.4f}\n"

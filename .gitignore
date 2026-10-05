@@ -98,3 +98,6 @@ alpha_vantage_key.txt
 
 # OS
 Thumbs.db
+
+# Generated structural-break datasets
+data/structural_breaks/

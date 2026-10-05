@@ -1,6 +1,6 @@
 # 🏦 Synthetic Financial Data
 
-> Generate realistic synthetic OHLCV (Open, High, Low, Close, Volume) financial time-series data using three state-of-the-art generative model architectures.
+> Generate synthetic OHLCV (Open, High, Low, Close, Volume) financial time series with four generative model architectures, evaluate them honestly against real data, and generate labeled structural-break datasets for testing break detectors.
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-orange.svg)](https://pytorch.org/)
@@ -10,16 +10,17 @@
 
 ## Overview
 
-**synfin** scaffolds a complete, production-ready Python project for generating synthetic stock market data.  
-It implements **three architecture options** you can train, compare, and combine:
+**synfin** is a Python package for generating and evaluating synthetic stock market data.
+It implements **four architectures** you can train and compare:
 
 | Model | Description | Reference |
 |-------|-------------|-----------|
 | **TimeGAN** | Recurrent GAN with temporal supervision | Yoon et al., NeurIPS 2019 |
 | **Diffusion (DDPM)** | 1D U-Net denoising diffusion model | Ho et al., NeurIPS 2020 |
+| **Diffusion-TS** | Transformer diffusion with trend/seasonal decomposition | Yuan & Qiao, ICLR 2024 |
 | **VAE + Copula** | Variational Autoencoder with copula dependency modeling | Kingma & Welling 2014 |
 
-Generated data reproduces key **stylized facts** of financial time series:
+The evaluation suite checks whether generated data reproduces the key **stylized facts** of financial returns:
 - 📊 Fat-tailed return distributions
 - 📈 Volatility clustering
 - 🔗 Volume-volatility correlation
@@ -50,7 +51,7 @@ Sampling:   x_T ~ N(0,I) ──→[denoise T steps]──→ x_0
 ```
 Encoder:  X ──→[LSTM]──→ (μ, σ²)  ──→[reparameterize]──→ z
 Decoder:  z ──→[LSTM]──→ X̂
-Copula:   z_train ──→ Fit Gaussian/Student-t Copula
+Copula:   μ(X_train) ──→ Fit Gaussian/Student-t Copula   (after training)
 Generate: Copula.sample() ──→ z ──→ Decoder ──→ X_synthetic
 ```
 
@@ -60,54 +61,33 @@ Generate: Copula.sample() ──→ z ──→ Decoder ──→ X_synthetic
 
 ```
 synthetic-financial-data/
-├── README.md
-├── pyproject.toml            # Modern Python project config
-├── requirements.txt          # Pinned dependencies
-├── setup.cfg                 # Package configuration
-├── .gitignore
+├── pyproject.toml            # Package metadata, dependencies, entry points, tool config
+├── requirements.txt          # `-e .` (dependencies live in pyproject.toml)
+├── setup.cfg                 # flake8 settings only
 ├── Makefile                  # Common developer commands
+├── .github/workflows/ci.yml  # Lint + tests + smoke test on every push/PR
 │
-├── configs/                  # YAML configuration files
-│   ├── default.yaml          # Shared defaults
-│   ├── timegan.yaml          # TimeGAN hyperparameters
-│   ├── diffusion.yaml        # Diffusion model hyperparameters
-│   └── vae_copula.yaml       # VAE+Copula hyperparameters
+├── configs/                  # YAML configs; model files pull in default.yaml via `defaults:`
+│   ├── default.yaml          # Data, training and evaluation defaults
+│   ├── timegan.yaml / diffusion.yaml / diffusion_ts.yaml / vae_copula.yaml
+│   └── diffusion_ts_quick.yaml   # Short Diffusion-TS run for CPU demos
 │
-├── data/
-│   ├── raw/                  # Downloaded data (gitignored)
-│   ├── processed/            # Preprocessed data (gitignored)
-│   └── synthetic/            # Generated synthetic data (gitignored)
+├── data/                     # raw/, processed/, synthetic/, structural_breaks/ (gitignored)
+├── notebooks/                # Exploration, training, evaluation, visualization
 │
-├── notebooks/                # Jupyter notebooks
-│   ├── 01_data_exploration.ipynb
-│   ├── 02_model_training.ipynb
-│   ├── 03_evaluation.ipynb
-│   └── 04_visualization.ipynb
+├── src/synfin/
+│   ├── cli/                  # synfin-download/-train/-generate/-evaluate/-structural-breaks
+│   ├── data/                 # Download, features, leak-free preprocessing, OHLCV rebuild
+│   ├── models/               # timegan/, diffusion/, diffusion_ts/, vae_copula/, factory.py
+│   ├── training/             # Trainer, EMA, LR schedulers, self-describing checkpoints
+│   ├── evaluation/           # Statistical tests, stylized facts, TSTR, privacy
+│   ├── structural_breaks/    # Labeled structural-break data generator (ADIA formats)
+│   ├── constraints/          # OHLCV post-processing constraints
+│   ├── visualization/        # Plotting utilities
+│   └── utils/                # Config, logging, seed, device
 │
-├── src/
-│   └── synfin/               # Main Python package
-│       ├── data/             # Data loading & preprocessing
-│       ├── models/
-│       │   ├── timegan/      # TimeGAN (Yoon et al.)
-│       │   ├── diffusion/    # DDPM diffusion model
-│       │   └── vae_copula/   # VAE + Copula
-│       ├── training/         # Unified trainer, losses, callbacks
-│       ├── evaluation/       # Statistical tests, stylized facts, TSTR, privacy
-│       ├── constraints/      # OHLCV post-processing constraints
-│       ├── visualization/    # Plotting utilities
-│       └── utils/            # Config, logging, seed, device
-│
-├── scripts/                  # CLI entry points
-│   ├── download_data.py
-│   ├── train.py
-│   ├── generate.py
-│   └── evaluate.py
-│
-└── tests/                    # Unit tests (pytest)
-    ├── test_data/
-    ├── test_models/
-    ├── test_constraints/
-    └── test_evaluation/
+├── scripts/                  # Thin wrappers around synfin.cli + smoke_test.py
+└── tests/                    # pytest suite, incl. an end-to-end CLI pipeline test
 ```
 
 ---
@@ -121,165 +101,181 @@ synthetic-financial-data/
 ### Quick Install
 
 ```bash
-# Clone the repository
 git clone https://github.com/AndrewFSee/synthetic-financial-data.git
 cd synthetic-financial-data
 
-# Install dependencies and package
-pip install -r requirements.txt
-pip install -e .
-```
+# Optional, CPU-only machines: the CPU build of PyTorch is far smaller
+pip install torch --index-url https://download.pytorch.org/whl/cpu
 
-### Developer Install
-
-```bash
-pip install -e ".[dev]"
-```
-
-Or use the Makefile:
-
-```bash
-make install        # Production dependencies
-make install-dev    # Development dependencies (includes testing, linting)
+pip install -e .            # or: make install
+pip install -e ".[dev]"     # with tests, linters, Jupyter (make install-dev)
 ```
 
 ---
 
 ## Quick Start
 
-### 1. Download Financial Data
+Each step consumes the previous step's output. `make pipeline MODEL=<model> TICKER=<ticker>` runs steps 2–4.
+
+### 1. Download financial data
 
 ```bash
-# Download daily OHLCV data for multiple tickers
-python scripts/download_data.py \
-    --tickers AAPL MSFT GOOGL AMZN META \
-    --start 2015-01-01 \
-    --end 2024-12-31 \
-    --interval 1d
+synfin-download --tickers AAPL MSFT        # defaults come from configs/default.yaml
 ```
 
-Or with Make:
-```bash
-make download
-```
+Writes `data/raw/<TICKER>_1d.parquet`.
 
-### 2. Train a Model
+### 2. Train a model
 
 ```bash
-# Train TimeGAN
-python scripts/train.py --model timegan --config configs/timegan.yaml
-
-# Train Diffusion Model
-python scripts/train.py --model diffusion --config configs/diffusion.yaml
-
-# Train VAE + Copula
-python scripts/train.py --model vae_copula --config configs/vae_copula.yaml
+synfin-train --model timegan               # or diffusion, diffusion_ts, vae_copula
+synfin-train --model diffusion_ts --config configs/diffusion_ts_quick.yaml --ticker MSFT
 ```
+
+Writes:
+- `data/processed/<TICKER>_windows.npz`: the scaled train/val/test windows, plus the scaler and feature names.
+- `checkpoints/<model>.pt`: a self-describing checkpoint with the architecture, config, feature names and scaler.
+
+For models with a validation split, the checkpoint holds the best-validation weights (EMA weights when `ema_decay` is set).
+
+### 3. Generate synthetic data
 
 ```bash
-make train-timegan
-make train-diffusion
-make train-vae
+synfin-generate --checkpoint checkpoints/timegan.pt --num-samples 1000
 ```
 
-### 3. Generate Synthetic Data
+The model is rebuilt from the checkpoint and its samples are un-scaled to the original feature units. Output goes to `data/synthetic/<model>_<TICKER>.npz` with:
+- `windows`: generated feature windows
+- `feature_names`
+- `ohlcv`: valid OHLCV bars rebuilt from the generated returns
+
+Diffusion sampling and VAE copula/temperature settings come from the config's `generation:` section and can be overridden with flags.
+
+### 4. Evaluate quality
 
 ```bash
-python scripts/generate.py \
-    --model timegan \
-    --checkpoint checkpoints/timegan_best.pt \
-    --num-samples 1000 \
-    --seq-length 30
+synfin-evaluate \
+    --real-data data/processed/AAPL_windows.npz \
+    --synthetic-data data/synthetic/timegan_AAPL.npz \
+    --output reports/timegan_AAPL
 ```
 
-```bash
-make generate
-```
-
-### 4. Evaluate Quality
-
-```bash
-python scripts/evaluate.py \
-    --real-data data/processed/AAPL.parquet \
-    --synthetic-data data/synthetic/timegan_synthetic.npy \
-    --output reports/
-```
-
-```bash
-make evaluate
-```
+The real training windows are the reference, and the never-seen test windows are the holdout for the TSTR and privacy checks. Every `scripts/*.py` file is equivalent to the matching `synfin-*` command.
 
 ---
 
 ## Configuration
 
-All configurations live in `configs/`. The hierarchy is:
-
-```
-configs/default.yaml        ← shared base configuration
-    └── configs/timegan.yaml    ← model-specific overrides
-    └── configs/diffusion.yaml
-    └── configs/vae_copula.yaml
-```
-
-### Key Configuration Options
+Model configs extend `configs/default.yaml` through a `defaults:` list (resolved by `synfin.utils.config.load_config`). Every key in the shipped configs is read by the code.
 
 ```yaml
-# configs/default.yaml
+# configs/default.yaml (excerpt)
 data:
-  tickers: [AAPL, MSFT, GOOGL]
-  start_date: "2015-01-01"
-  end_date: "2024-12-31"
+  feature_set: "returns"     # stationary features (recommended) or "levels" (legacy)
+  normalization: "zscore"    # scaler fit on training rows only
   window_size: 30
-  normalization: "minmax"   # or "zscore"
-  features: [Open, High, Low, Close, Volume, LogReturn, LogVolume, DollarVolume]
-
+  train_ratio: 0.7
+  val_ratio: 0.15
 training:
   seed: 42
-  device: "auto"            # auto-selects CUDA > MPS > CPU
-  batch_size: 64
-  checkpoint_dir: "checkpoints"
+  device: "auto"             # CUDA > MPS > CPU
+evaluation:
+  tstr_task: "volatility"    # or "direction"
 ```
+
+Diffusion and VAE configs also set `gradient_clip`, `lr_scheduler` (`cosine` with `warmup_steps`, or `reduce_on_plateau`) and `ema_decay`. TimeGAN uses `lambda_e`, `lambda_s` and `gamma`.
 
 ---
 
 ## Data Module
 
-### Features Computed Automatically
+### Feature sets
 
-| Feature | Description |
-|---------|-------------|
-| `LogReturn` | `log(Close_t / Close_{t-1})` |
-| `LogVolume` | `log(1 + Volume)` |
-| `DollarVolume` | `Close × Volume` |
-| `RSI` | Relative Strength Index (14-period) |
-| `MACD` | Moving Average Convergence Divergence |
-| `BB_Upper/Lower` | Bollinger Bands (20-period, 2σ) |
-| `ATR` | Average True Range (14-period) |
-| `RealizedVol` | Rolling std of log returns (annualized) |
+The default `returns` set is stationary, and generated windows map back to valid OHLCV bars (`synfin.data.preprocess.windows_to_ohlcv`):
+
+| Feature | Definition |
+|---------|------------|
+| `LogReturn` | `log(C_t / C_{t-1})` |
+| `OpenGap` | `log(O_t / C_{t-1})` |
+| `HighRange` | `log(H_t / max(O_t, C_t))` ≥ 0 |
+| `LowRange` | `log(min(O_t, C_t) / L_t)` ≥ 0 |
+| `LogVolumeRel` | `log1p(V_t)` minus its trailing 20-bar mean |
+
+The legacy `levels` set (raw `Open/High/Low/Close/Volume`, `LogReturn`, `LogVolume`, `DollarVolume`) is still available. Price levels trend over the years, though, so models trained on them mostly learn the training period's price level.
+
+Optional scale-free indicators (`use_rsi`, `use_macd`, `use_bollinger`, `use_atr`) add `RSI/100`, `MACD_Hist/Close`, `BB_Width` and `ATR/Close`.
+
+### No look-ahead
+
+Rows are split chronologically into train, validation and test *before* anything is fitted. The scaler sees training rows only, and each split is windowed separately, so no window straddles two splits.
 
 ---
 
 ## Evaluation Methodology
 
-### Statistical Tests
-- **Kolmogorov-Smirnov (KS) test** — per-feature marginal distribution comparison
-- **Maximum Mean Discrepancy (MMD)** — distribution distance with RBF kernel
-- **ACF comparison** — autocorrelation function similarity at multiple lags
+Pass windows in original units together with their feature names. Columns are found by name, and distance-based metrics use features standardized with the real data's statistics.
 
-### Stylized Facts
-- **Fat tails** — excess kurtosis of return distributions
-- **Volatility clustering** — ACF of absolute/squared returns
-- **Leverage effect** — negative return-volatility correlation
-- **Volume-volatility correlation** — positive volume and volatility correlation
+### Statistical Tests
+- **KS test**: per-feature, on one random timestep per window so rows are close to independent. The realism score uses the KS *statistic*, because p-values from tens of thousands of pooled rows are always 0.
+- **MMD**: unbiased MMD² with an RBF kernel, median-heuristic bandwidth and O(N·M) memory.
+- **ACF comparison**: autocorrelations pooled *within* windows, never across window boundaries.
+
+### Stylized Facts (computed on unscaled log returns)
+- **Fat tails**: excess kurtosis.
+- **Volatility clustering**: ACF of |r| and r².
+- **Leverage effect**: correlation between r_t and future |r_{t+k}|.
+- **Volume-volatility correlation**: correlation between volume and |r|.
 
 ### TSTR Benchmark (Train on Synthetic, Test on Real)
-Trains a downstream classifier (next-day return direction) on synthetic data, evaluates on real data. Compares against TRTR (real-to-real) baseline.
+A logistic classifier is trained on synthetic windows and tested on held-out real windows, against a train-on-real (TRTR) baseline. The default task predicts whether the next step's |return| is above the real median, which volatility clustering makes learnable. Next-day *direction* is also available, but it is close to unpredictable, so the gap says little. Label thresholds come from the real data, so any monotone scaling works. If a classifier can't be trained on the synthetic data at all, the TSTR score is 0.
 
-### Privacy Metrics
-- **NNDR** — Nearest-Neighbor Distance Ratio (memorization detection)
-- **DCR** — Distance to Closest Record
-- **Membership Inference Risk** — fraction of synthetic samples suspiciously close to training data
+### Privacy and Collapse (calibrated against a real holdout)
+A generator that collapses toward the dense centre of the data produces samples close to many training records without copying any of them. Raw distance-to-closest-record can't tell that apart from memorization, so the two are measured separately:
+
+- **Memorization rate**: for each sample, the ratio d1/d2 of its distances to the nearest and second-nearest training records. A copy sits on one record (ratio ≈ 0); a collapsed sample sits between many (ratio ≈ 1). The rate is the share of synthetic samples below the 5th percentile of the holdout's ratios, so about 0.05 is expected without memorization.
+- **Collapse diagnostics**: spread (median std ratio vs real) and nearest-record coverage (distinct nearest training records, relative to an equal-sized holdout sample). Either below 0.5 flags collapse.
+- **Verdict**: `memorization` if the rate is above twice the expected rate, otherwise `collapse` if collapse is flagged, otherwise `ok`.
+- **NNDR** (median nearest-record distance, synthetic vs holdout) is still reported for reference.
+
+### Discriminative Score
+A gradient-boosted classifier tries to tell real windows from synthetic ones using per-window dynamics features: volatility level, tail weight, autocorrelation of |x|, and leverage. It's scored with cross-validated ROC AUC on contiguous-block folds, so overlapping real windows can't leak between folds. KS and MMD are nearly blind to temporal structure, so this is the component that catches i.i.d. noise with the right mean and variance.
+
+The **realism score** is the mean of five components, each in [0, 1]: `1 − KS statistic`, `1 − √MMD²`, the TSTR gap score, the privacy score (`1 −` excess memorization rate), and the discriminative score `1 − 2·(AUC − 0.5)`. They are all reported under `realism_components`.
+
+As a sanity check on a known GARCH-t process, held-out data from the same process scores 0.98, time-shuffled data 0.89, and i.i.d. noise with matched mean and variance 0.77.
+
+---
+
+## Structural Break Datasets
+
+`synfin.structural_breaks` generates labeled univariate return series for testing structural-break / change-point detectors. Output uses the ADIA Lab competition file layouts, so existing ADIA pipelines can read it directly.
+
+```bash
+# 2025 offline layout: break (if any) exactly at the pre/post boundary
+python scripts/generate_structural_breaks.py --preset adia_offline --n-series 10000 --report
+
+# 2026 real-time layout: break-free history + online segment, break anywhere online
+python scripts/generate_structural_breaks.py --preset adia_realtime --split test --seed 1
+
+# Easier/harder breaks, or real AAPL returns as the no-break process
+python scripts/generate_structural_breaks.py --magnitude-scale 2.0
+python scripts/generate_structural_breaks.py --bootstrap-from data/raw/AAPL_1d.parquet
+```
+
+Files are written to `data/structural_breaks/<preset>/`: `X_<split>.parquet` and `y_<split>.parquet` (plus `y_<split>_index.parquet` for real-time), in the same schema as the competition data. `meta_<split>.parquet` holds the ground truth that real data lacks: break type, effect size, τ, ramp length, decoys and every process parameter before and after the break.
+
+**Model.** Each series is `mu + sigma * x_t`, where `x_t` is a unit-variance AR(1)-GARCH(1,1) process with Student-t shocks and an optional slow log-volatility factor. Breaks move one parameter group, instantly or along a linear ramp: `mean`, `variance`, `ar`, `tails` (shock df), `garch` (clustering intensity), or a `compound` of two. Dynamics breaks preserve variance. Transient decoys (single outliers and decaying volatility bursts) are added to break and no-break series alike, so detectors are tested against realistic false positives.
+
+**Calibration.** The presets were tuned against the public ADIA training sets. The no-break segments reproduce the real data's tail weight, autocorrelation spread, volatility clustering and outlier frequency. Five simple two-sample detectors score within about 0.035 AUC (offline) and 0.015 AUC (real-time) of their AUC on real data.
+
+```python
+from synfin.structural_breaks import generate, get_preset, auc_report, ts_auc
+
+ds = generate(5000, get_preset("adia_offline"), seed=0)
+scores = my_detector(ds.series, ds.meta["n_hist"])          # one score per series
+print(auc_report(scores, ds.meta))                           # AUC by break type / effect size / decoy
+# real-time: ts_auc({id: per_step_scores}, ds.meta) -> time-stratified AUC
+```
 
 ---
 
@@ -291,28 +287,30 @@ make test
 
 # Run specific test module
 python -m pytest tests/test_models/test_timegan.py -v
-python -m pytest tests/test_constraints/ -v
+python -m pytest tests/test_cli/ -v          # end-to-end train -> generate -> evaluate
+python scripts/smoke_test.py                 # all four models on dummy data
 ```
 
 ---
 
 ## Makefile Reference
 
+`MODEL` (default `timegan`), `TICKER` (default `AAPL`) and `NUM_SAMPLES` can be overridden, e.g. `make pipeline MODEL=diffusion_ts`.
+
 | Command | Description |
 |---------|-------------|
-| `make install` | Install production dependencies |
-| `make install-dev` | Install dev dependencies |
-| `make download` | Download financial data |
-| `make train-timegan` | Train TimeGAN model |
-| `make train-diffusion` | Train Diffusion model |
-| `make train-vae` | Train VAE+Copula model |
-| `make generate` | Generate synthetic data |
-| `make evaluate` | Run evaluation suite |
+| `make install` / `make install-dev` | Install the package (with dev extras) |
+| `make download` | Download `TICKER` |
+| `make train` | Train `MODEL` on `TICKER` (also `train-timegan`, `train-diffusion`, `train-diffusion-ts`, `train-vae`) |
+| `make generate` | Sample from `checkpoints/MODEL.pt` |
+| `make evaluate` | Evaluate the generated windows against `TICKER`'s real windows |
+| `make pipeline` | train → generate → evaluate |
+| `make structural-breaks` | Generate offline + real-time structural-break datasets |
+| `make smoke` | End-to-end smoke test on dummy data |
 | `make test` | Run unit tests |
-| `make lint` | Run flake8, black, isort |
-| `make format` | Auto-format code |
+| `make lint` / `make format` | flake8, black, isort |
 | `make clean` | Clean caches and build artifacts |
-| `make all` | Full pipeline |
+| `make all` | install → download → pipeline |
 
 ---
 
