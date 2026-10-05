@@ -11,27 +11,42 @@ import yaml
 logger = logging.getLogger(__name__)
 
 
-def load_config(path: Union[str, Path]) -> Dict[str, Any]:
+def load_config(path: Union[str, Path], resolve_defaults: bool = True) -> Dict[str, Any]:
     """Load a YAML configuration file.
+
+    A top-level ``defaults`` list names sibling config files (without the
+    ``.yaml`` suffix) that are loaded first and then overridden by this file,
+    e.g. ``defaults: [default]`` in ``configs/timegan.yaml`` pulls in
+    ``configs/default.yaml``. Later entries override earlier ones.
 
     Args:
         path: Path to the YAML file.
+        resolve_defaults: Whether to resolve the ``defaults`` list.
 
     Returns:
         Dictionary with configuration values.
 
     Raises:
-        FileNotFoundError: If the config file does not exist.
+        FileNotFoundError: If the config file (or a referenced default) does not exist.
     """
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
 
     with open(path, "r") as f:
-        config = yaml.safe_load(f)
+        config = yaml.safe_load(f) or {}
+
+    if resolve_defaults and "defaults" in config:
+        defaults = config.pop("defaults") or []
+        if isinstance(defaults, str):
+            defaults = [defaults]
+        base: Dict[str, Any] = {}
+        for name in defaults:
+            base = merge_configs(base, load_config(path.parent / f"{name}.yaml"))
+        config = merge_configs(base, config)
 
     logger.debug("Loaded config from %s", path)
-    return config or {}
+    return config
 
 
 def merge_configs(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:

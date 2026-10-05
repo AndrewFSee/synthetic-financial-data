@@ -3,17 +3,13 @@
 import numpy as np
 import pandas as pd
 import pytest
-from pathlib import Path
-import sys
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 from synfin.constraints.ohlcv import (
-    enforce_ohlc_constraints,
-    enforce_volume_constraints,
-    enforce_price_continuity,
-    enforce_positive_prices,
     apply_all_constraints,
+    enforce_ohlc_constraints,
+    enforce_positive_prices,
+    enforce_price_continuity,
+    enforce_volume_constraints,
 )
 
 
@@ -23,8 +19,8 @@ def invalid_ohlcv():
     return pd.DataFrame(
         {
             "Open": [100.0, 102.0, 98.0, 105.0],
-            "High": [99.0, 101.0, 97.0, 104.0],   # High < Open (invalid)
-            "Low": [101.0, 103.0, 99.0, 106.0],   # Low > Open (invalid)
+            "High": [99.0, 101.0, 97.0, 104.0],  # High < Open (invalid)
+            "Low": [101.0, 103.0, 99.0, 106.0],  # Low > Open (invalid)
             "Close": [100.5, 102.5, 98.5, 105.5],
             "Volume": [-100.0, 0.0, 500.0, 1000.0],  # Negative/zero (invalid)
         }
@@ -68,12 +64,14 @@ def test_enforce_price_continuity():
 
 def test_enforce_positive_prices():
     """enforce_positive_prices replaces non-positive values."""
-    df = pd.DataFrame({
-        "Open": [-1.0, 0.0, 100.0],
-        "High": [10.0, 0.0, 110.0],
-        "Low": [-5.0, 0.0, 90.0],
-        "Close": [0.0, 0.0, 100.0],
-    })
+    df = pd.DataFrame(
+        {
+            "Open": [-1.0, 0.0, 100.0],
+            "High": [10.0, 0.0, 110.0],
+            "Low": [-5.0, 0.0, 90.0],
+            "Close": [0.0, 0.0, 100.0],
+        }
+    )
     fixed = enforce_positive_prices(df)
     for col in ["Open", "High", "Low", "Close"]:
         assert (fixed[col] > 0).all()

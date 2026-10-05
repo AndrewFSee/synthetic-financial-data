@@ -56,7 +56,9 @@ def plot_distributions(
     for i in range(num_features):
         ax = axes[i]
         ax.hist(real[:, i], bins=bins, alpha=0.5, label="Real", density=True, color="steelblue")
-        ax.hist(synthetic[:, i], bins=bins, alpha=0.5, label="Synthetic", density=True, color="coral")
+        ax.hist(
+            synthetic[:, i], bins=bins, alpha=0.5, label="Synthetic", density=True, color="coral"
+        )
         ax.set_title(feature_names[i])
         ax.legend(fontsize=8)
         ax.set_xlabel("Value")

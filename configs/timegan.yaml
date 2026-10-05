@@ -1,19 +1,14 @@
-# TimeGAN-specific configuration
-# Extends default.yaml
+# TimeGAN configuration (Yoon et al., NeurIPS 2019)
 
 defaults:
   - default
 
 model:
   name: "timegan"
-  module: "synfin.models.timegan.timegan"
-  class: "TimeGAN"
-
-  # Architecture
-  hidden_dim: 24
+  hidden_dim: 24       # RNN hidden size, also the latent (embedding) dimension
   num_layers: 3
-  module_dim: 24      # Embedding/latent dimension
-  rnn_type: "gru"     # "gru" or "lstm"
+  noise_dim: 24        # generator noise dimension
+  rnn_type: "gru"      # "gru" or "lstm"
   dropout: 0.0
 
 training:
@@ -29,17 +24,15 @@ training:
   joint_epochs: 300
   generator_lr: 1.0e-4
   discriminator_lr: 1.0e-4
-  joint_lr: 1.0e-4
+  joint_lr: 1.0e-4     # embedder/recovery learning rate during joint training
 
   # Loss weights
-  lambda_e: 10.0    # Embedding/recovery loss weight
-  lambda_s: 10.0    # Supervisor loss weight
-  gamma: 1.0        # Generator/discriminator balance
+  lambda_e: 10.0       # embedder reconstruction loss weight
+  lambda_s: 10.0       # generator supervised-loss weight
+  gamma: 1.0           # weight of adversarial terms on the raw generator output
 
   batch_size: 128
   gradient_clip: 1.0
 
 generation:
   num_samples: 1000
-  seq_length: 30
-  noise_dim: 24

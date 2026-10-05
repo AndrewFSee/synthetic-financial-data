@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from torch import Tensor
 from torch.utils.data import DataLoader
 
+from synfin.models.vae_copula.copula import get_copula
 from synfin.models.vae_copula.decoder import Decoder
 from synfin.models.vae_copula.encoder import Encoder
 
@@ -22,7 +23,13 @@ class VAECopula(nn.Module):
 
     Supports:
       - Standard VAE training (ELBO = reconstruction + KL divergence)
-      - Copula-based correlated sampling at generation time
+      - Copula-based latent sampling at generation time: after training,
+        :meth:`fit_copula` fits a Gaussian or Student-t copula to the encoder's
+        posterior means of the training data, and :meth:`generate` samples
+        latents from it instead of the N(0, I) prior. This matches the
+        aggregate posterior the decoder was actually trained on. The fitted
+        copula is stored in registered buffers, so it is saved and restored
+        with the ``state_dict``.
 
     Args:
         input_dim: Number of features per timestep.
@@ -33,6 +40,9 @@ class VAECopula(nn.Module):
         rnn_type: "lstm" or "gru".
         dropout: Dropout rate.
         kl_weight: Beta parameter (1.0 = standard VAE, >1 = β-VAE).
+        recon_loss: Reconstruction loss, "mse" or "mae".
+        copula_type: "gaussian" or "student_t".
+        copula_df: Degrees of freedom of the Student-t copula.
     """
 
     def __init__(
@@ -45,10 +55,23 @@ class VAECopula(nn.Module):
         rnn_type: str = "lstm",
         dropout: float = 0.1,
         kl_weight: float = 1.0,
+        recon_loss: str = "mse",
+        copula_type: str = "gaussian",
+        copula_df: float = 4.0,
     ) -> None:
         super().__init__()
+        if recon_loss not in ("mse", "mae"):
+            raise ValueError(f"Unknown recon_loss {recon_loss!r}; use 'mse' or 'mae'.")
+        get_copula(copula_type, latent_dim, df=copula_df)  # validates copula_type
         self.latent_dim = latent_dim
         self.kl_weight = kl_weight
+        self.recon_loss = recon_loss
+        self.copula_type = copula_type
+        self.copula_df = copula_df
+        self.register_buffer("copula_fitted", torch.tensor(False))
+        self.register_buffer("copula_corr", torch.eye(latent_dim))
+        self.register_buffer("copula_mean", torch.zeros(latent_dim))
+        self.register_buffer("copula_std", torch.ones(latent_dim))
 
         self.encoder = Encoder(
             input_dim=input_dim,
@@ -119,7 +142,10 @@ class VAECopula(nn.Module):
             Tuple of (total_loss, recon_loss, kl_loss).
         """
         beta = kl_weight if kl_weight is not None else self.kl_weight
-        recon_loss = F.mse_loss(x_recon, x, reduction="mean")
+        if self.recon_loss == "mae":
+            recon_loss = F.l1_loss(x_recon, x)
+        else:
+            recon_loss = F.mse_loss(x_recon, x)
         kl_loss = -0.5 * torch.mean(1 + log_var - mu.pow(2) - log_var.exp())
         return recon_loss + beta * kl_loss, recon_loss, kl_loss
 
@@ -147,9 +173,7 @@ class VAECopula(nn.Module):
         Returns:
             Training history dict.
         """
-        histories: dict[str, list[float]] = {
-            "loss": [], "recon_loss": [], "kl_loss": []
-        }
+        histories: dict[str, list[float]] = {"loss": [], "recon_loss": [], "kl_loss": []}
 
         for epoch in range(epochs):
             # KL annealing
@@ -179,11 +203,49 @@ class VAECopula(nn.Module):
             if (epoch + 1) % 10 == 0:
                 logger.info(
                     "[VAE] Epoch %d/%d  loss=%.4f  recon=%.4f  kl=%.4f",
-                    epoch + 1, epochs,
-                    epoch_loss / n, epoch_recon / n, epoch_kl / n,
+                    epoch + 1,
+                    epochs,
+                    epoch_loss / n,
+                    epoch_recon / n,
+                    epoch_kl / n,
                 )
 
         return histories
+
+    @torch.no_grad()
+    def fit_copula(
+        self,
+        dataloader: DataLoader,
+        device: torch.device = torch.device("cpu"),
+    ) -> None:
+        """Fit the latent copula to the posterior means of the training data.
+
+        Args:
+            dataloader: DataLoader with (training) sequences.
+            device: Compute device.
+        """
+        self.eval()
+        mus = []
+        for batch in dataloader:
+            if isinstance(batch, (list, tuple)):
+                batch = batch[0]
+            mu, _ = self.encoder(batch.to(device))
+            mus.append(mu.cpu())
+        z = torch.cat(mus).numpy()
+        copula = get_copula(self.copula_type, self.latent_dim, df=self.copula_df).fit(z)
+        self.copula_corr.copy_(torch.as_tensor(copula.corr_matrix, dtype=torch.float32))
+        self.copula_mean.copy_(torch.as_tensor(copula.marginal_means, dtype=torch.float32))
+        self.copula_std.copy_(torch.as_tensor(copula.marginal_stds, dtype=torch.float32))
+        self.copula_fitted.fill_(True)
+        logger.info("Fitted %s latent copula on %d samples.", self.copula_type, len(z))
+
+    def _copula(self):
+        copula = get_copula(self.copula_type, self.latent_dim, df=self.copula_df)
+        copula.corr_matrix = self.copula_corr.cpu().double().numpy()
+        copula.marginal_means = self.copula_mean.cpu().double().numpy()
+        copula.marginal_stds = self.copula_std.cpu().double().numpy()
+        copula._fitted = True
+        return copula
 
     @torch.no_grad()
     def generate(
@@ -191,17 +253,27 @@ class VAECopula(nn.Module):
         num_samples: int,
         device: torch.device = torch.device("cpu"),
         temperature: float = 1.0,
+        use_copula: bool = True,
     ) -> Tensor:
-        """Generate synthetic sequences by sampling from the prior.
+        """Generate synthetic sequences.
 
         Args:
             num_samples: Number of sequences to generate.
             device: Compute device.
-            temperature: Latent space temperature (>1 = more diverse).
+            temperature: Scales the latent spread around its mean (>1 = more diverse).
+            use_copula: Sample latents from the fitted copula (falls back to the
+                N(0, I) prior if :meth:`fit_copula` has not been called).
 
         Returns:
             Synthetic sequences, shape (num_samples, seq_length, input_dim).
         """
         self.eval()
-        z = torch.randn(num_samples, self.latent_dim, device=device) * temperature
+        if use_copula and bool(self.copula_fitted):
+            z = self._copula().sample_tensor(num_samples, device=device)
+            mean = self.copula_mean.to(device)
+            z = mean + (z - mean) * temperature
+        else:
+            if use_copula:
+                logger.warning("Copula not fitted; sampling latents from the N(0, I) prior.")
+            z = torch.randn(num_samples, self.latent_dim, device=device) * temperature
         return self.decoder(z)

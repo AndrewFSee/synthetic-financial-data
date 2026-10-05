@@ -46,6 +46,7 @@ def plot_correlation_heatmap(
 
     try:
         import seaborn as sns
+
         for ax, data, title in [
             (axes[0], real_corr, "Real Correlations"),
             (axes[1], synth_corr, "Synthetic Correlations"),

@@ -1,0 +1,12 @@
+# Quick Diffusion-TS run for a fast-but-honest end-to-end demo on real data.
+# Inherits the full Diffusion-TS config; only the training length is reduced so
+# it finishes in a few minutes on CPU. (Checkpoints store their own architecture,
+# so any settings here round-trip through synfin-generate.)
+
+defaults:
+  - diffusion_ts
+
+training:
+  epochs: 60
+  warmup_steps: 200
+  batch_size: 64

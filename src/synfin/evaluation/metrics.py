@@ -1,15 +1,28 @@
-"""Aggregate all evaluation metrics into a summary report."""
+"""Aggregate all evaluation metrics into a summary report.
+
+Pass windows in their original (unscaled) feature units together with the
+feature names. Columns are located by name (``LogReturn`` for returns;
+``LogVolumeRel``, ``LogVolume`` or ``Volume`` for volume), stylized facts are
+computed on the raw returns, and distance-based metrics (MMD, privacy) use
+features standardized with the real data's mean/std so no single feature's
+units dominate.
+"""
 
 from __future__ import annotations
 
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 
-from synfin.evaluation.privacy import membership_inference_risk, nearest_neighbor_distance_ratio
+from synfin.evaluation.discriminative import discriminative_score
+from synfin.evaluation.privacy import (
+    collapse_diagnostics,
+    membership_inference_risk,
+    nearest_neighbor_distance_ratio,
+)
 from synfin.evaluation.statistical_tests import (
     acf_comparison,
     cross_correlation_comparison,
@@ -21,134 +34,177 @@ from synfin.evaluation.tstr import tstr_benchmark
 
 logger = logging.getLogger(__name__)
 
+RETURN_COLUMNS = ("LogReturn",)
+VOLUME_COLUMNS = ("LogVolumeRel", "LogVolume", "Volume")
+
+
+def _find(names: Optional[List[str]], candidates) -> Optional[int]:
+    if not names:
+        return None
+    for c in candidates:
+        if c in names:
+            return names.index(c)
+    return None
+
 
 def compute_all_metrics(
     real: np.ndarray,
     synthetic: np.ndarray,
-    feature_names: Optional[list] = None,
+    feature_names: Optional[List[str]] = None,
     output_dir: Optional[str] = None,
     run_tstr: bool = True,
+    real_holdout: Optional[np.ndarray] = None,
+    ks_alpha: float = 0.05,
+    mmd_bandwidth: Optional[float] = None,
+    tstr_task: str = "volatility",
+    seed: int = 0,
 ) -> Dict:
     """Compute and aggregate all evaluation metrics.
 
     Args:
-        real: Real data windows, shape (N, seq_len, num_features).
-        synthetic: Synthetic data windows, shape (M, seq_len, num_features).
-        feature_names: Optional feature names for reporting.
-        output_dir: If provided, save report to this directory.
+        real: Real (training) windows, shape (N, seq_len, F), unscaled.
+        synthetic: Synthetic windows, shape (M, seq_len, F), same units.
+        feature_names: Feature names for the last axis. Needed for stylized
+            facts and TSTR (which must know the return column).
+        output_dir: If provided, save ``evaluation_report.json`` here.
         run_tstr: Whether to run the TSTR benchmark.
+        real_holdout: Real windows the generator never saw (e.g. the test
+            split). Used by TSTR and the privacy metrics; carved out of
+            ``real`` chronologically if omitted.
+        ks_alpha: Significance level for KS ``reject`` flags.
+        mmd_bandwidth: RBF bandwidth for MMD (None = median heuristic).
+        tstr_task: "volatility" or "direction".
+        seed: Seed for subsampling.
 
     Returns:
         Nested dictionary with all evaluation results and an overall score.
     """
     logger.info("Computing evaluation metrics...")
+    rng = np.random.default_rng(seed)
+    n_features = real.shape[-1]
+    if feature_names is not None and len(feature_names) != n_features:
+        raise ValueError(f"{len(feature_names)} feature names for {n_features} features.")
 
-    # Flatten windows for non-sequential tests
-    real_flat = real.reshape(len(real), -1)
-    synth_flat = synthetic.reshape(len(synthetic), -1)
+    real_2d = real.reshape(-1, n_features)
+    synth_2d = synthetic.reshape(-1, n_features)
 
-    # Per-feature flat arrays (last feature only, for stylized facts)
-    real_2d = real.reshape(-1, real.shape[-1])
-    synth_2d = synthetic.reshape(-1, synthetic.shape[-1])
+    # Standardize with real statistics for distance-based metrics.
+    mu = real_2d.mean(axis=0)
+    sd = real_2d.std(axis=0) + 1e-12
 
-    report: Dict = {}
+    def std(x: np.ndarray) -> np.ndarray:
+        return (x - mu) / sd
 
-    # --- Statistical tests ---
+    report: Dict = {"n_real": int(len(real)), "n_synthetic": int(len(synthetic))}
+
+    # --- KS: one random timestep per window keeps rows ~independent ---
     logger.info("Running KS tests...")
-    report["ks_tests"] = ks_test(real_2d, synth_2d, feature_names)
+    real_ks = real[np.arange(len(real)), rng.integers(0, real.shape[1], len(real))]
+    synth_ks = synthetic[
+        np.arange(len(synthetic)), rng.integers(0, synthetic.shape[1], len(synthetic))
+    ]
+    report["ks_tests"] = ks_test(real_ks, synth_ks, feature_names, alpha=ks_alpha)
 
     logger.info("Computing MMD...")
-    report["mmd"] = mmd_rbf(real_flat, synth_flat)
+    report["mmd"] = mmd_rbf(std(real), std(synthetic), bandwidth=mmd_bandwidth, seed=seed)
 
     logger.info("Computing ACF comparison...")
-    report["acf"] = acf_comparison(real_2d, synth_2d, feature_names=feature_names)
+    report["acf"] = acf_comparison(real, synthetic, feature_names=feature_names)
 
     logger.info("Computing cross-correlation...")
     report["cross_correlation"] = cross_correlation_comparison(real_2d, synth_2d)
-    # Convert numpy arrays to lists for serialization
-    for k in ["real_corr", "synthetic_corr", "diff"]:
-        report["cross_correlation"][k] = report["cross_correlation"][k].tolist()
 
-    # --- Stylized facts (use 5th feature = LogReturn if available) ---
-    n_features = real.shape[-1]
-    ret_idx = min(5, n_features - 1)
-    vol_idx = min(6, n_features - 1)
-    vol_col = min(4, n_features - 1)
+    # --- Stylized facts on unscaled returns, located by name ---
+    ret_idx = _find(feature_names, RETURN_COLUMNS)
+    vol_idx = _find(feature_names, VOLUME_COLUMNS)
+    if ret_idx is None:
+        logger.warning("No 'LogReturn' feature name given; skipping stylized facts and TSTR.")
+    else:
+        logger.info("Checking stylized facts...")
+        report["stylized_facts_real"] = check_all_stylized_facts(
+            real[:, :, ret_idx], real[:, :, vol_idx] if vol_idx is not None else None
+        )
+        report["stylized_facts_synthetic"] = check_all_stylized_facts(
+            synthetic[:, :, ret_idx],
+            synthetic[:, :, vol_idx] if vol_idx is not None else None,
+        )
 
-    real_returns = real_2d[:, ret_idx]
-    synth_returns = synth_2d[:, ret_idx]
-    real_volume = real_2d[:, vol_col]
-    real_vol = np.abs(real_returns)
+    # --- Discriminative score (classifier two-sample test on window dynamics) ---
+    if min(len(real), len(synthetic)) >= 20:
+        logger.info("Computing discriminative score...")
+        report["discriminative"] = discriminative_score(real, synthetic, ret_idx, seed=seed)
 
-    logger.info("Checking stylized facts...")
-    report["stylized_facts_real"] = check_all_stylized_facts(
-        real_returns, real_volume, real_vol
-    )
-    report["stylized_facts_synthetic"] = check_all_stylized_facts(
-        synth_returns, real_volume, real_vol
-    )
-
-    # --- Privacy ---
+    # --- Privacy (holdout-calibrated) ---
     logger.info("Computing privacy metrics...")
+    holdout_std = std(real_holdout) if real_holdout is not None else None
     report["privacy"] = {
-        "nndr": nearest_neighbor_distance_ratio(real_flat, synth_flat),
-        "membership_inference": membership_inference_risk(real_flat, synth_flat),
+        "nndr": nearest_neighbor_distance_ratio(std(real), std(synthetic), holdout=holdout_std),
+        "membership_inference": membership_inference_risk(
+            std(real), std(synthetic), holdout=holdout_std
+        ),
+        "collapse": collapse_diagnostics(std(real), std(synthetic), holdout=holdout_std),
     }
+    mi = report["privacy"]["membership_inference"]
+    if mi["memorization_rate"] > 2.0 * mi["expected_rate"]:
+        report["privacy"]["verdict"] = "memorization"
+    elif report["privacy"]["collapse"]["collapsed"]:
+        report["privacy"]["verdict"] = "collapse"
+    else:
+        report["privacy"]["verdict"] = "ok"
 
     # --- TSTR ---
-    if run_tstr and len(real) > 50 and len(synthetic) > 50:
+    if run_tstr and ret_idx is not None and len(real) > 50 and len(synthetic) > 50:
         logger.info("Running TSTR benchmark...")
-        report["tstr"] = tstr_benchmark(real, synthetic)
+        report["tstr"] = tstr_benchmark(
+            real, synthetic, return_idx=ret_idx, task=tstr_task, real_test=real_holdout
+        )
 
-    # --- Overall realism score ---
-    report["realism_score"] = _compute_realism_score(report)
+    report["realism_components"] = _realism_components(report)
+    comps = report["realism_components"]
+    report["realism_score"] = float(np.mean(list(comps.values()))) if comps else 0.0
     logger.info("Overall realism score: %.3f", report["realism_score"])
 
-    # --- Save report ---
     if output_dir:
         _save_report(report, output_dir)
-
     return report
 
 
-def _compute_realism_score(report: Dict) -> float:
-    """Compute an overall realism score from sub-metrics (0 to 1).
+def _realism_components(report: Dict) -> Dict[str, float]:
+    """Sub-scores in [0, 1], higher = more realistic.
 
-    Higher is better (more realistic).
-
-    Args:
-        report: The evaluation report dictionary.
-
-    Returns:
-        Scalar score in [0, 1].
+    * ``ks``: 1 - mean KS statistic (average marginal CDF agreement).
+    * ``mmd``: 1 - sqrt(MMD²), clipped to [0, 1] (joint window distribution).
+    * ``tstr``: 1 - 2 * |TRTR - TSTR| AUC gap, clipped (downstream usefulness).
+      0 if a classifier could not even be trained on the synthetic data (its
+      labels were all one class, e.g. near-constant generated volatility).
+    * ``privacy``: 1 - excess memorization rate (d1/d2 test), scaled so the
+      no-memorization rate scores 1 and copying every sample scores 0. Mode
+      collapse is deliberately not penalized here; the discriminative score
+      already catches it, and it is reported under ``privacy.collapse``.
+    * ``discriminative``: 1 - 2 * (AUC - 0.5) of a real-vs-synthetic classifier
+      on per-window dynamics features (see :mod:`synfin.evaluation.discriminative`).
+      The other components barely see temporal dynamics (KS is marginal-only
+      and MMD on flattened windows is dominated by per-step noise), so without
+      this term i.i.d. noise with the right mean/std scores almost as well as
+      real data.
     """
-    scores = []
-
-    # KS test: fraction of features with p_value > 0.05 (fail to reject H0)
-    if "ks_tests" in report:
-        ks_pass = [
-            1.0 if v["p_value"] > 0.05 else 0.0
-            for v in report["ks_tests"].values()
-        ]
-        if ks_pass:
-            scores.append(np.mean(ks_pass))
-
-    # MMD: lower is better; normalize as exp(-mmd)
+    comps: Dict[str, float] = {}
+    if report.get("ks_tests"):
+        comps["ks"] = 1.0 - float(np.mean([v["statistic"] for v in report["ks_tests"].values()]))
     if "mmd" in report:
-        mmd_val = report["mmd"]
-        scores.append(float(np.exp(-mmd_val)))
-
-    # TSTR: penalize gap between TRTR and TSTR
-    if "tstr" in report and "tstr_gap" in report["tstr"]:
-        gap = abs(report["tstr"]["tstr_gap"].get("accuracy", 0.0))
-        scores.append(max(0.0, 1.0 - 2 * gap))
-
-    # NNDR: closer to 1 is better (no memorization)
-    if "privacy" in report and "nndr" in report["privacy"]:
-        nndr = report["privacy"]["nndr"].get("nndr", 1.0)
-        scores.append(min(1.0, nndr))
-
-    return float(np.mean(scores)) if scores else 0.0
+        comps["mmd"] = float(np.clip(1.0 - np.sqrt(max(report["mmd"], 0.0)), 0.0, 1.0))
+    tstr = report.get("tstr", {})
+    if "tstr_gap" in tstr:
+        comps["tstr"] = max(0.0, 1.0 - 2.0 * abs(tstr["tstr_gap"]["auc"]))
+    elif "auc" in tstr.get("trtr", {}) and "skipped" in tstr.get("tstr", {}):
+        comps["tstr"] = 0.0
+    if "membership_inference" in report.get("privacy", {}):
+        mi = report["privacy"]["membership_inference"]
+        excess = (mi["memorization_rate"] - mi["expected_rate"]) / (1.0 - mi["expected_rate"])
+        comps["privacy"] = float(np.clip(1.0 - excess, 0.0, 1.0))
+    if "discriminative" in report:
+        comps["discriminative"] = report["discriminative"]["score"]
+    return comps
 
 
 def _save_report(report: Dict, output_dir: str) -> None:
@@ -159,12 +215,12 @@ def _save_report(report: Dict, output_dir: str) -> None:
     def _serialize(obj):
         if isinstance(obj, np.ndarray):
             return obj.tolist()
-        if isinstance(obj, (np.float32, np.float64)):
-            return float(obj)
-        if isinstance(obj, (np.int32, np.int64)):
-            return int(obj)
-        if isinstance(obj, bool):
+        if isinstance(obj, np.bool_):
             return bool(obj)
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
         raise TypeError(f"Not serializable: {type(obj)}")
 
     report_path = path / "evaluation_report.json"

@@ -5,13 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "synfin"
 version = "0.1.0"
-description = "Synthetic Financial Data Generation using TimeGAN, Diffusion Models, and VAE+Copula"
+description = "Synthetic financial time series (TimeGAN, diffusion, VAE+Copula) and structural-break test data"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"
 authors = [
     {name = "synfin contributors"}
 ]
+urls = {Repository = "https://github.com/AndrewFSee/synthetic-financial-data"}
 keywords = ["synthetic data", "finance", "time series", "generative models", "deep learning"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -21,6 +22,8 @@ classifiers = [
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
@@ -53,16 +56,20 @@ dev = [
     "jupyter>=1.0",
     "ipykernel>=6.25",
 ]
-wandb = ["wandb>=0.15"]
 
 [project.scripts]
-synfin-download = "synfin.data.download:main"
-synfin-train = "scripts.train:main"
-synfin-generate = "scripts.generate:main"
-synfin-evaluate = "scripts.evaluate:main"
+synfin-download = "synfin.cli.download:main"
+synfin-train = "synfin.cli.train:main"
+synfin-generate = "synfin.cli.generate:main"
+synfin-evaluate = "synfin.cli.evaluate:main"
+synfin-structural-breaks = "synfin.cli.structural_breaks:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
 
 [tool.black]
 line-length = 100

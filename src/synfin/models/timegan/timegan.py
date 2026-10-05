@@ -92,6 +92,7 @@ class TimeGAN(nn.Module):
         optimizer: torch.optim.Optimizer,
         epochs: int = 200,
         device: torch.device = torch.device("cpu"),
+        grad_clip: Optional[float] = None,
     ) -> list[float]:
         """Phase 1: Autoencoder pretraining (Embedder + Recovery).
 
@@ -100,6 +101,7 @@ class TimeGAN(nn.Module):
             optimizer: Optimizer for Embedder + Recovery parameters.
             epochs: Number of training epochs.
             device: Compute device.
+            grad_clip: Max gradient norm (None disables clipping).
 
         Returns:
             List of per-epoch reconstruction losses.
@@ -117,6 +119,7 @@ class TimeGAN(nn.Module):
                 x_tilde = self.recovery(h)
                 loss = 10.0 * torch.sqrt(mse(x, x_tilde))
                 loss.backward()
+                _clip(optimizer, grad_clip)
                 optimizer.step()
                 epoch_loss += loss.item()
 
@@ -133,6 +136,7 @@ class TimeGAN(nn.Module):
         optimizer: torch.optim.Optimizer,
         epochs: int = 200,
         device: torch.device = torch.device("cpu"),
+        grad_clip: Optional[float] = None,
     ) -> list[float]:
         """Phase 2: Supervisor pretraining.
 
@@ -141,6 +145,7 @@ class TimeGAN(nn.Module):
             optimizer: Optimizer for Supervisor parameters.
             epochs: Number of training epochs.
             device: Compute device.
+            grad_clip: Max gradient norm (None disables clipping).
 
         Returns:
             List of per-epoch supervised losses.
@@ -160,6 +165,7 @@ class TimeGAN(nn.Module):
                 # Supervisor predicts h[1:] from h[:-1]
                 loss = mse(h[:, 1:, :], h_hat[:, :-1, :])
                 loss.backward()
+                _clip(optimizer, grad_clip)
                 optimizer.step()
                 epoch_loss += loss.item()
 
@@ -181,8 +187,14 @@ class TimeGAN(nn.Module):
         lambda_s: float = 10.0,
         gamma: float = 1.0,
         device: torch.device = torch.device("cpu"),
+        grad_clip: Optional[float] = None,
     ) -> dict[str, list[float]]:
         """Phase 3: Joint adversarial training.
+
+        Follows Yoon et al. (2019): the generator is pushed to fool the
+        discriminator both through the supervisor (``h_hat``) and directly
+        (``e_hat``, weighted by ``gamma``), and the discriminator is trained
+        against both kinds of fakes.
 
         Args:
             dataloader: DataLoader yielding real sequences.
@@ -190,10 +202,11 @@ class TimeGAN(nn.Module):
             optimizer_d: Optimizer for Discriminator.
             optimizer_e: Optimizer for Embedder + Recovery.
             epochs: Number of training epochs.
-            lambda_e: Weight for embedding/reconstruction loss.
-            lambda_s: Weight for supervised loss.
-            gamma: Balance between generator and discriminator losses.
+            lambda_e: Weight for the embedder's reconstruction loss.
+            lambda_s: Weight for the generator's supervised loss.
+            gamma: Weight of the adversarial terms on the raw generator output e_hat.
             device: Compute device.
+            grad_clip: Max gradient norm (None disables clipping).
 
         Returns:
             Dictionary with per-epoch loss histories.
@@ -220,20 +233,26 @@ class TimeGAN(nn.Module):
                 # Supervised loss
                 g_loss_s = mse(h[:, 1:, :], h_hat_s[:, :-1, :])
 
-                # Adversarial loss
+                # Adversarial losses: through the supervisor and on raw generator output
                 y_fake = self.discriminator(h_hat)
                 g_loss_u = bce(y_fake, torch.ones_like(y_fake))
+                y_fake_e = self.discriminator(e_hat)
+                g_loss_u_e = bce(y_fake_e, torch.ones_like(y_fake_e))
 
                 # Moments matching
                 g_loss_v1 = torch.mean(
-                    torch.abs(torch.sqrt(h_hat.var(dim=0) + 1e-6) -
-                              torch.sqrt(h.var(dim=0) + 1e-6))
+                    torch.abs(torch.sqrt(h_hat.var(dim=0) + 1e-6) - torch.sqrt(h.var(dim=0) + 1e-6))
                 )
                 g_loss_v2 = torch.mean(torch.abs(h_hat.mean(dim=0) - h.mean(dim=0)))
-                g_loss = (g_loss_u + gamma * g_loss_u +
-                          lambda_s * torch.sqrt(g_loss_s) +
-                          g_loss_v1 + g_loss_v2)
+                g_loss = (
+                    g_loss_u
+                    + gamma * g_loss_u_e
+                    + lambda_s * torch.sqrt(g_loss_s)
+                    + g_loss_v1
+                    + g_loss_v2
+                )
                 g_loss.backward()
+                _clip(optimizer_g, grad_clip)
                 optimizer_g.step()
 
                 # --- Discriminator step ---
@@ -244,11 +263,14 @@ class TimeGAN(nn.Module):
 
                 y_real = self.discriminator(h)
                 y_fake = self.discriminator(h_hat)
+                y_fake_e = self.discriminator(e_hat)
                 d_loss_real = bce(y_real, torch.ones_like(y_real))
                 d_loss_fake = bce(y_fake, torch.zeros_like(y_fake))
-                d_loss = d_loss_real + d_loss_fake
+                d_loss_fake_e = bce(y_fake_e, torch.zeros_like(y_fake_e))
+                d_loss = d_loss_real + d_loss_fake + gamma * d_loss_fake_e
                 if d_loss > 0.15:
                     d_loss.backward()
+                    _clip(optimizer_d, grad_clip)
                     optimizer_d.step()
 
                 # --- Embedder/Recovery step ---
@@ -257,10 +279,11 @@ class TimeGAN(nn.Module):
                 x_tilde = self.recovery(h)
                 h_hat_s = self.supervisor(h)
 
-                e_loss_0 = 10.0 * torch.sqrt(mse(x, x_tilde))
+                e_loss_0 = lambda_e * torch.sqrt(mse(x, x_tilde))
                 e_loss_s = mse(h[:, 1:, :], h_hat_s[:, :-1, :])
                 e_loss = e_loss_0 + 0.1 * e_loss_s
                 e_loss.backward()
+                _clip(optimizer_e, grad_clip)
                 optimizer_e.step()
 
                 g_loss_ep += g_loss.item()
@@ -274,8 +297,11 @@ class TimeGAN(nn.Module):
             if (epoch + 1) % 10 == 0:
                 logger.info(
                     "[Joint] Epoch %d/%d  G=%.4f  D=%.4f  E=%.4f",
-                    epoch + 1, epochs,
-                    g_loss_ep / n, d_loss_ep / n, e_loss_ep / n,
+                    epoch + 1,
+                    epochs,
+                    g_loss_ep / n,
+                    d_loss_ep / n,
+                    e_loss_ep / n,
                 )
 
         return histories
@@ -307,3 +333,10 @@ class TimeGAN(nn.Module):
         h_hat = self.supervisor(e_hat)
         x_hat = self.recovery(h_hat)
         return x_hat
+
+
+def _clip(optimizer: torch.optim.Optimizer, max_norm: Optional[float]) -> None:
+    """Clip the gradient norm of all parameters handled by ``optimizer``."""
+    if max_norm:
+        params = [p for group in optimizer.param_groups for p in group["params"]]
+        nn.utils.clip_grad_norm_(params, max_norm)

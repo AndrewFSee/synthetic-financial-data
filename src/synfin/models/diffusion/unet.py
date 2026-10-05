@@ -7,7 +7,6 @@ from typing import List, Optional
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch import Tensor
 
 
@@ -187,9 +186,7 @@ class UNet1D(nn.Module):
                 skips.append(h)
             block_idx += 1
 
-        num_res_blocks = (
-            len(self.decoder_blocks) // max(len(skips), 1)
-        ) or 1
+        num_res_blocks = (len(self.decoder_blocks) // max(len(skips), 1)) or 1
         for i, block in enumerate(self.decoder_blocks):
             if i % num_res_blocks == 0 and skips:
                 skip = skips.pop()

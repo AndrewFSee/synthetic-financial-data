@@ -63,7 +63,7 @@ class Decoder(nn.Module):
         Returns:
             Reconstructed sequences X̂, shape (batch, seq_length, output_dim).
         """
-        batch_size = z.shape[0]
+        z.shape[0]
 
         # Repeat z for each timestep
         z_repeated = z.unsqueeze(1).expand(-1, self.seq_length, -1)

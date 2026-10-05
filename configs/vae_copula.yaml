@@ -1,28 +1,22 @@
 # VAE + Copula configuration
-# Extends default.yaml
 
 defaults:
   - default
 
 model:
   name: "vae_copula"
-  module: "synfin.models.vae_copula.vae"
-  class: "VAECopula"
-
-  # Encoder / Decoder architecture
   rnn_type: "lstm"            # "gru" or "lstm"
-  encoder_hidden_dim: 128
-  encoder_num_layers: 2
+  hidden_dim: 128             # encoder and decoder RNN hidden size
+  num_layers: 2               # encoder and decoder RNN layers
   latent_dim: 32
-  decoder_hidden_dim: 128
-  decoder_num_layers: 2
   dropout: 0.1
+  reconstruction_loss: "mse"  # "mse" or "mae"
 
-  # Copula settings
+  # Latent copula, fitted to the encoder's posterior means after training and
+  # used for sampling instead of the N(0, I) prior.
   copula:
     type: "gaussian"          # "gaussian" or "student_t"
-    df: 4                     # Degrees of freedom for Student-t copula
-    fit_marginals: true       # Fit marginal distributions per feature
+    df: 4                     # degrees of freedom for the Student-t copula
 
 training:
   epochs: 300
@@ -34,13 +28,11 @@ training:
   gradient_clip: 1.0
 
   # ELBO weights
-  kl_weight: 1.0              # Beta-VAE parameter (1.0 = standard VAE)
-  kl_annealing: true          # Anneal KL weight from 0 to kl_weight
+  kl_weight: 1.0              # beta (1.0 = standard VAE)
+  kl_annealing: true          # ramp beta from 0 to kl_weight
   kl_annealing_epochs: 50
-  reconstruction_loss: "mse"  # "mse" or "mae"
 
 generation:
   num_samples: 1000
-  seq_length: 30
-  use_copula: true            # Use copula for correlated sampling
-  temperature: 1.0            # Latent space sampling temperature
+  use_copula: true            # sample latents from the fitted copula
+  temperature: 1.0            # latent spread multiplier

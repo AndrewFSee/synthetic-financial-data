@@ -1,69 +1,77 @@
-.PHONY: install install-dev download train-timegan train-diffusion train-vae generate evaluate test lint clean all help
+.PHONY: install install-dev download train train-timegan train-diffusion train-diffusion-ts train-vae generate evaluate pipeline structural-breaks smoke test lint format clean all help
 
 PYTHON := python
 PIP := pip
 CONFIG_DIR := configs
-DATA_DIR := data
 CHECKPOINT_DIR := checkpoints
 REPORT_DIR := reports
 
+# Override on the command line, e.g. `make pipeline MODEL=diffusion_ts TICKER=MSFT`
+MODEL ?= timegan
+TICKER ?= AAPL
+NUM_SAMPLES ?= 1000
+
 help:
 	@echo "Available targets:"
-	@echo "  install          Install production dependencies"
-	@echo "  install-dev      Install dev dependencies (includes testing, linting)"
-	@echo "  download         Download financial data"
-	@echo "  train-timegan    Train the TimeGAN model"
-	@echo "  train-diffusion  Train the Diffusion model"
-	@echo "  train-vae        Train the VAE+Copula model"
-	@echo "  generate         Generate synthetic data"
-	@echo "  evaluate         Run full evaluation suite"
-	@echo "  test             Run unit tests"
-	@echo "  lint             Run linters (flake8, black, isort)"
-	@echo "  clean            Clean generated files and caches"
-	@echo "  all              Full pipeline: install -> download -> train -> generate -> evaluate"
+	@echo "  install            Install the package"
+	@echo "  install-dev        Install with dev dependencies (tests, linters, Jupyter)"
+	@echo "  download           Download OHLCV data (tickers/dates from configs/default.yaml)"
+	@echo "  train              Train MODEL on TICKER (default: $(MODEL) on $(TICKER))"
+	@echo "  train-timegan / train-diffusion / train-diffusion-ts / train-vae"
+	@echo "  generate           Sample NUM_SAMPLES windows from checkpoints/MODEL.pt"
+	@echo "  evaluate           Compare the generated windows with TICKER's real windows"
+	@echo "  pipeline           train -> generate -> evaluate for MODEL on TICKER"
+	@echo "  structural-breaks  Generate labeled structural-break datasets (ADIA formats)"
+	@echo "  smoke              End-to-end smoke test on dummy data (no network)"
+	@echo "  test               Run unit tests"
+	@echo "  lint               Run linters (flake8, black, isort)"
+	@echo "  format             Auto-format code"
+	@echo "  clean              Clean generated files and caches"
+	@echo "  all                install -> download -> pipeline"
 
 install:
-	$(PIP) install -r requirements.txt
 	$(PIP) install -e .
 
 install-dev:
-	$(PIP) install -r requirements.txt
 	$(PIP) install -e ".[dev]"
 
 download:
-	$(PYTHON) scripts/download_data.py \
-		--tickers AAPL MSFT GOOGL AMZN META \
-		--start 2015-01-01 \
-		--end 2024-12-31 \
-		--interval 1d
+	$(PYTHON) scripts/download_data.py --tickers $(TICKER)
+
+train:
+	$(PYTHON) scripts/train.py --model $(MODEL) --config $(CONFIG_DIR)/$(MODEL).yaml --ticker $(TICKER)
 
 train-timegan:
-	$(PYTHON) scripts/train.py \
-		--model timegan \
-		--config $(CONFIG_DIR)/timegan.yaml
+	$(MAKE) train MODEL=timegan
 
 train-diffusion:
-	$(PYTHON) scripts/train.py \
-		--model diffusion \
-		--config $(CONFIG_DIR)/diffusion.yaml
+	$(MAKE) train MODEL=diffusion
+
+train-diffusion-ts:
+	$(MAKE) train MODEL=diffusion_ts
 
 train-vae:
-	$(PYTHON) scripts/train.py \
-		--model vae_copula \
-		--config $(CONFIG_DIR)/vae_copula.yaml
+	$(MAKE) train MODEL=vae_copula
 
 generate:
 	$(PYTHON) scripts/generate.py \
-		--model timegan \
-		--checkpoint $(CHECKPOINT_DIR)/timegan_best.pt \
-		--num-samples 1000 \
-		--seq-length 30
+		--checkpoint $(CHECKPOINT_DIR)/$(MODEL).pt \
+		--num-samples $(NUM_SAMPLES)
 
 evaluate:
 	$(PYTHON) scripts/evaluate.py \
-		--real-data $(DATA_DIR)/processed/AAPL.parquet \
-		--synthetic-data $(DATA_DIR)/synthetic/timegan_AAPL.parquet \
-		--output $(REPORT_DIR)/
+		--real-data data/processed/$(TICKER)_windows.npz \
+		--synthetic-data data/synthetic/$(MODEL)_$(TICKER).npz \
+		--output $(REPORT_DIR)/$(MODEL)_$(TICKER)
+
+pipeline: train generate evaluate
+
+structural-breaks:
+	$(PYTHON) scripts/generate_structural_breaks.py --preset adia_offline --report
+	$(PYTHON) scripts/generate_structural_breaks.py --preset adia_realtime
+
+smoke:
+	$(PYTHON) scripts/smoke_test.py
 
 test:
 	$(PYTHON) -m pytest tests/ -v --tb=short
@@ -85,4 +93,4 @@ clean:
 	find . -type f -name ".coverage" -delete 2>/dev/null || true
 	rm -rf build/ dist/ htmlcov/ .mypy_cache/ 2>/dev/null || true
 
-all: install download train-timegan generate evaluate
+all: install download pipeline

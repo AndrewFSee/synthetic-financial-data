@@ -1,9 +1,24 @@
-"""Privacy metrics: nearest-neighbor distance and membership inference."""
+"""Privacy metrics: memorization checks against a real holdout set.
+
+Distances to the training data only mean something relative to a reference:
+how close does *unseen real data* get to the training set? Both metrics below
+compare synthetic samples against such a holdout (real data the generator
+never trained on). If no holdout is supplied, the last part of ``real`` is
+held out chronologically, with a gap so that overlapping windows cannot leak.
+
+Copying vs. collapse: a generator that collapses toward the dense centre of
+the data also produces samples that are close to training records, without
+copying any of them. Raw distance-to-closest-record (DCR) cannot tell the two
+apart. :func:`membership_inference_risk` therefore uses the ratio d1/d2 of the
+distances to the nearest and second-nearest training records: a copy sits on
+one particular record (ratio near 0), while a collapsed sample sits between
+many (ratio near 1). Collapse itself is reported by :func:`collapse_diagnostics`.
+"""
 
 from __future__ import annotations
 
 import logging
-from typing import Dict
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
@@ -11,52 +26,57 @@ from sklearn.neighbors import NearestNeighbors
 logger = logging.getLogger(__name__)
 
 
+def _flat(x: np.ndarray) -> np.ndarray:
+    return x.reshape(len(x), -1) if x.ndim > 2 else x
+
+
+def _reference_split(
+    real: np.ndarray, holdout: Optional[np.ndarray], holdout_ratio: float = 0.2
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Return (reference, holdout); carve a chronological holdout if none given."""
+    if holdout is not None:
+        return _flat(real), _flat(holdout)
+    gap = real.shape[1] if real.ndim > 2 else 0  # window length: no shared rows
+    n_hold = int(len(real) * holdout_ratio)
+    cut = len(real) - n_hold
+    if cut - gap < 2 or n_hold < 2:
+        raise ValueError("Not enough real samples to carve out a holdout set.")
+    return _flat(real[: cut - gap]), _flat(real[cut:])
+
+
 def nearest_neighbor_distance_ratio(
     real: np.ndarray,
     synthetic: np.ndarray,
-    n_neighbors: int = 5,
+    holdout: Optional[np.ndarray] = None,
 ) -> Dict[str, float]:
-    """Compute Nearest-Neighbor Distance Ratio (NNDR).
+    """Nearest-Neighbor Distance Ratio (NNDR) against a real holdout.
 
-    NNDR compares:
-      - Distance from each synthetic sample to its nearest real sample
-      - Distance from each real sample to its nearest real sample (leave-one-out)
+    NNDR = median nearest-neighbor distance (synthetic -> reference) /
+           median nearest-neighbor distance (holdout -> reference).
 
-    A ratio close to 1.0 indicates synthetic data is as far from real data as
-    real data is from itself (good privacy). A ratio near 0 indicates memorization.
+    ~1.0 means synthetic samples sit as far from the training records as unseen
+    real data does; values well below 1 indicate memorization. Only the single
+    nearest record is used: averaging over several neighbors dilutes the signal
+    from a sample that copies one particular record.
 
     Args:
-        real: Real data, shape (N, D). Flattened if > 2D.
-        synthetic: Synthetic data, shape (M, D).
-        n_neighbors: Number of neighbors to consider.
+        real: Real (training/reference) data, shape (N, ...).
+        synthetic: Synthetic data, shape (M, ...).
+        holdout: Unseen real data; carved from ``real`` if None.
 
     Returns:
-        Dict with mean NNDR and related statistics.
+        Dict with ``nndr`` and the two median distances.
     """
-    if real.ndim > 2:
-        real = real.reshape(len(real), -1)
-    if synthetic.ndim > 2:
-        synthetic = synthetic.reshape(len(synthetic), -1)
-
-    # Distances from synthetic to real
-    nn_sr = NearestNeighbors(n_neighbors=n_neighbors + 1)
-    nn_sr.fit(real)
-    dist_s2r, _ = nn_sr.kneighbors(synthetic)
-    mean_dist_s2r = float(dist_s2r[:, 1:].mean())
-
-    # Distances from real to real (leave-one-out)
-    nn_rr = NearestNeighbors(n_neighbors=n_neighbors + 1)
-    nn_rr.fit(real)
-    dist_r2r, _ = nn_rr.kneighbors(real)
-    mean_dist_r2r = float(dist_r2r[:, 1:].mean())  # exclude self (dist=0)
-
-    nndr = mean_dist_s2r / (mean_dist_r2r + 1e-10)
-
+    reference, held = _reference_split(real, holdout)
+    nn = NearestNeighbors(n_neighbors=1).fit(reference)
+    med_s = float(np.median(nn.kneighbors(_flat(synthetic))[0]))
+    med_h = float(np.median(nn.kneighbors(held)[0]))
+    nndr = med_s / (med_h + 1e-10)
     return {
         "nndr": nndr,
-        "mean_dist_synthetic_to_real": mean_dist_s2r,
-        "mean_dist_real_to_real": mean_dist_r2r,
-        "privacy_risk": nndr < 0.5,  # Low NNDR = high memorization risk
+        "median_dist_synthetic_to_real": med_s,
+        "median_dist_holdout_to_real": med_h,
+        "privacy_risk": bool(nndr < 0.5),
     }
 
 
@@ -64,7 +84,7 @@ def distance_to_closest_record(
     real: np.ndarray,
     synthetic: np.ndarray,
 ) -> Dict[str, float]:
-    """Compute Distance to Closest Record (DCR).
+    """Distance to Closest Record (DCR) from each synthetic sample to ``real``.
 
     Args:
         real: Real data, shape (N, D).
@@ -73,16 +93,9 @@ def distance_to_closest_record(
     Returns:
         Dict with DCR statistics.
     """
-    if real.ndim > 2:
-        real = real.reshape(len(real), -1)
-    if synthetic.ndim > 2:
-        synthetic = synthetic.reshape(len(synthetic), -1)
-
-    nn = NearestNeighbors(n_neighbors=1)
-    nn.fit(real)
-    distances, _ = nn.kneighbors(synthetic)
+    nn = NearestNeighbors(n_neighbors=1).fit(_flat(real))
+    distances, _ = nn.kneighbors(_flat(synthetic))
     dcr = distances[:, 0]
-
     return {
         "mean_dcr": float(dcr.mean()),
         "median_dcr": float(np.median(dcr)),
@@ -91,40 +104,104 @@ def distance_to_closest_record(
     }
 
 
+def _nearest_two(reference: np.ndarray, x: np.ndarray):
+    """Nearest-record distance, d1/d2 ratio and nearest-record index for each row of x."""
+    nn = NearestNeighbors(n_neighbors=2).fit(reference)
+    dist, idx = nn.kneighbors(x)
+    return dist[:, 0], dist[:, 0] / (dist[:, 1] + 1e-12), idx[:, 0]
+
+
 def membership_inference_risk(
     real: np.ndarray,
     synthetic: np.ndarray,
     threshold_percentile: float = 5.0,
+    holdout: Optional[np.ndarray] = None,
 ) -> Dict[str, float]:
-    """Estimate membership inference attack risk.
+    """Holdout-calibrated memorization rate based on the d1/d2 distance ratio.
 
-    Approximates the fraction of synthetic samples that are suspiciously
-    close to real training samples (potential memorization).
+    For each sample, d1/d2 is its distance to the nearest training record
+    divided by the distance to the second nearest. The threshold is the
+    ``threshold_percentile`` of the holdout's ratios. Without memorization,
+    about that share of synthetic samples falls below it too; copies of
+    training records fall far below it. Unlike raw DCR, the ratio is not
+    fooled by mode collapse, and being scale-free it shifts little when the
+    holdout period is calmer or more volatile than the training period.
 
     Args:
-        real: Real (training) data.
+        real: Real (training/reference) data.
         synthetic: Synthetic data.
-        threshold_percentile: DCR percentile below which samples are "at risk".
+        threshold_percentile: Percentile of holdout ratios used as threshold.
+        holdout: Unseen real data; carved from ``real`` if None.
 
     Returns:
-        Dict with risk metrics.
+        Dict with ``memorization_rate``, ``expected_rate``, their ratio
+        ``memorization_lift``, the ratio threshold, and DCR statistics.
     """
-    dcr_result = distance_to_closest_record(real, synthetic)
-    nn = NearestNeighbors(n_neighbors=1)
-    if real.ndim > 2:
-        real = real.reshape(len(real), -1)
-    if synthetic.ndim > 2:
-        synthetic = synthetic.reshape(len(synthetic), -1)
-
-    nn.fit(real)
-    distances, _ = nn.kneighbors(synthetic)
-    dcr = distances[:, 0]
-
-    threshold = np.percentile(dcr, threshold_percentile)
-    at_risk = float((dcr <= threshold).mean())
-
+    reference, held = _reference_split(real, holdout)
+    dcr_s, ratio_s, _ = _nearest_two(reference, _flat(synthetic))
+    dcr_h, ratio_h, _ = _nearest_two(reference, held)
+    threshold = float(np.percentile(ratio_h, threshold_percentile))
+    rate = float((ratio_s <= threshold).mean())
+    expected = threshold_percentile / 100.0
     return {
-        **dcr_result,
-        "membership_inference_risk": at_risk,
-        "threshold": float(threshold),
+        "memorization_rate": rate,
+        "expected_rate": expected,
+        "memorization_lift": rate / expected,
+        "ratio_threshold": threshold,
+        "median_nn_ratio": float(np.median(ratio_s)),
+        "holdout_median_nn_ratio": float(np.median(ratio_h)),
+        "mean_dcr": float(dcr_s.mean()),
+        "median_dcr": float(np.median(dcr_s)),
+        "min_dcr": float(dcr_s.min()),
+        "holdout_median_dcr": float(np.median(dcr_h)),
+    }
+
+
+def collapse_diagnostics(
+    real: np.ndarray,
+    synthetic: np.ndarray,
+    holdout: Optional[np.ndarray] = None,
+    seed: int = 0,
+) -> Dict[str, float]:
+    """Detect mode collapse: too little spread, or too few distinct neighbours.
+
+    * ``dispersion_ratio``: median over features of std(synthetic) / std(real).
+    * ``coverage``: distinct nearest training records / number of samples, for
+      the synthetic data and for an equal-sized holdout sample (coverage
+      depends on sample size, hence the size matching).
+    * ``coverage_ratio``: synthetic coverage / holdout coverage.
+
+    ``collapsed`` is True when either ratio is below 0.5.
+
+    Args:
+        real: Real (training/reference) data, shape (N, seq_len, F) or (N, D).
+        synthetic: Synthetic data in the same layout.
+        holdout: Unseen real data; carved from ``real`` if None.
+        seed: Seed for the size-matching subsample.
+
+    Returns:
+        Dict with the diagnostics above.
+    """
+    n_feat = real.shape[-1]
+    sd_r = real.reshape(-1, n_feat).std(axis=0) + 1e-12
+    sd_s = synthetic.reshape(-1, n_feat).std(axis=0)
+    dispersion = float(np.median(sd_s / sd_r))
+
+    reference, held = _reference_split(real, holdout)
+    syn = _flat(synthetic)
+    rng = np.random.default_rng(seed)
+    m = min(len(syn), len(held))
+    syn = syn[rng.choice(len(syn), m, replace=False)]
+    held = held[rng.choice(len(held), m, replace=False)]
+    _, _, idx_s = _nearest_two(reference, syn)
+    _, _, idx_h = _nearest_two(reference, held)
+    cov_s = len(np.unique(idx_s)) / m
+    cov_h = len(np.unique(idx_h)) / m
+    coverage_ratio = cov_s / max(cov_h, 1e-12)
+    return {
+        "dispersion_ratio": dispersion,
+        "coverage": cov_s,
+        "holdout_coverage": cov_h,
+        "coverage_ratio": coverage_ratio,
+        "collapsed": bool(dispersion < 0.5 or coverage_ratio < 0.5),
     }

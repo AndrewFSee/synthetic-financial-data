@@ -2,16 +2,12 @@
 
 import pytest
 import torch
-from pathlib import Path
-import sys
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 from synfin.models.timegan import TimeGAN
-from synfin.models.timegan.embedder import Embedder
-from synfin.models.timegan.recovery import Recovery
-from synfin.models.timegan.generator import Generator
 from synfin.models.timegan.discriminator import Discriminator
+from synfin.models.timegan.embedder import Embedder
+from synfin.models.timegan.generator import Generator
+from synfin.models.timegan.recovery import Recovery
 from synfin.models.timegan.supervisor import Supervisor
 
 

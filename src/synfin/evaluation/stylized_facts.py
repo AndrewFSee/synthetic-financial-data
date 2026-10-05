@@ -1,145 +1,144 @@
-"""Check whether synthetic data reproduces stylized facts of financial returns."""
+"""Check whether data reproduces the stylized facts of financial returns.
+
+All checks take *unscaled* log returns. Min-max scaling shifts returns into
+[0, 1], after which ``|r|`` is no longer a volatility proxy, so run these on
+the original return units (``compute_all_metrics`` does this when given the
+feature names).
+
+Inputs may be one series (shape (T,)) or a batch of windows (shape (N, T)).
+Lagged statistics are pooled within windows (see
+:func:`~synfin.evaluation.statistical_tests.pooled_acf`) so that window
+boundaries and overlapping windows do not create artificial dependence.
+"""
 
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 from scipy import stats
 
+from synfin.evaluation.statistical_tests import pooled_acf
+
 
 def check_fat_tails(returns: np.ndarray) -> Dict[str, float]:
-    """Check for fat tails (excess kurtosis of returns).
-
-    Financial returns typically have kurtosis > 3 (leptokurtic).
+    """Kurtosis of returns; daily equity returns typically have excess kurtosis > 1.
 
     Args:
-        returns: Array of log returns, shape (N,) or (N, features).
+        returns: Log returns, shape (T,) or (N, T).
 
     Returns:
-        Dict with kurtosis and excess_kurtosis per feature.
+        Dict with ``kurtosis`` (Pearson), ``excess_kurtosis`` and ``is_fat_tailed``.
     """
-    if returns.ndim == 1:
-        returns = returns[:, None]
-
-    results = {}
-    for i in range(returns.shape[1]):
-        r = returns[:, i]
-        kurt = float(stats.kurtosis(r, fisher=False))  # Pearson kurtosis
-        excess_kurt = float(stats.kurtosis(r, fisher=True))  # Excess kurtosis
-        results[f"feature_{i}"] = {
-            "kurtosis": kurt,
-            "excess_kurtosis": excess_kurt,
-            "is_fat_tailed": excess_kurt > 1.0,
-        }
-    return results
-
-
-def check_volatility_clustering(
-    returns: np.ndarray,
-    max_lag: int = 20,
-) -> Dict[str, float]:
-    """Check for volatility clustering (ACF of squared/absolute returns).
-
-    Volatility clustering: ACF of |r_t| or r_t^2 is significantly positive.
-
-    Args:
-        returns: Log returns, shape (N,).
-        max_lag: Maximum lag for ACF computation.
-
-    Returns:
-        Dict with mean_abs_acf and mean_sq_acf at various lags.
-    """
-    abs_returns = np.abs(returns)
-    sq_returns = returns ** 2
-
-    def acf_mean(x: np.ndarray, max_lag: int) -> float:
-        n = len(x)
-        x_c = x - x.mean()
-        var = np.var(x)
-        acf_vals = []
-        for lag in range(1, max_lag + 1):
-            cov = np.dot(x_c[lag:], x_c[:-lag]) / (n - lag)
-            acf_vals.append(abs(cov / (var + 1e-10)))
-        return float(np.mean(acf_vals))
-
+    r = np.asarray(returns, dtype=np.float64).ravel()
+    excess = float(stats.kurtosis(r, fisher=True))
     return {
-        "mean_abs_return_acf": acf_mean(abs_returns, max_lag),
-        "mean_sq_return_acf": acf_mean(sq_returns, max_lag),
-        "has_clustering": acf_mean(abs_returns, max_lag) > 0.05,
+        "kurtosis": excess + 3.0,
+        "excess_kurtosis": excess,
+        "is_fat_tailed": excess > 1.0,
+    }
+
+
+def check_volatility_clustering(returns: np.ndarray, max_lag: int = 10) -> Dict[str, float]:
+    """Volatility clustering: positive autocorrelation of |r_t| and r_t^2.
+
+    Args:
+        returns: Log returns, shape (T,) or (N, T).
+        max_lag: Maximum lag (capped at window length - 2).
+
+    Returns:
+        Dict with the mean ACF of |r| and r^2 over lags 1..max_lag, and lag-1 values.
+    """
+    r = np.atleast_2d(np.asarray(returns, dtype=np.float64))
+    abs_acf = pooled_acf(np.abs(r), max_lag)
+    sq_acf = pooled_acf(r**2, max_lag)
+    return {
+        "mean_abs_return_acf": float(abs_acf[1:].mean()),
+        "mean_sq_return_acf": float(sq_acf[1:].mean()),
+        "abs_return_acf_lag1": float(abs_acf[1]),
+        "has_clustering": bool(abs_acf[1:].mean() > 0.05),
     }
 
 
 def check_leverage_effect(
     returns: np.ndarray,
-    volatility: np.ndarray,
-    lags: int = 10,
+    lags: int = 5,
+    threshold: float = -0.02,
 ) -> Dict[str, float]:
-    """Check for leverage effect: negative correlation between returns and future vol.
+    """Leverage effect: negative correlation between r_t and future |r_{t+k}|.
 
     Args:
-        returns: Log returns, shape (N,).
-        volatility: Realized/rolling volatility, shape (N,).
-        lags: Number of forward lags to check.
+        returns: Log returns, shape (T,) or (N, T).
+        lags: Number of forward lags (capped at window length - 1).
+        threshold: Mean correlation below which the effect is flagged.
 
     Returns:
-        Dict with correlation at each lag.
+        Dict with the correlation at each lag and their mean.
     """
-    results = {}
-    n = len(returns)
-    for lag in range(1, lags + 1):
-        if lag < n:
-            corr = float(np.corrcoef(returns[:-lag], volatility[lag:])[0, 1])
-            results[f"lag_{lag}"] = corr
-
-    neg_corrs = [v for v in results.values() if not np.isnan(v)]
-    results["mean_leverage_corr"] = float(np.mean(neg_corrs)) if neg_corrs else 0.0
-    results["has_leverage_effect"] = results["mean_leverage_corr"] < -0.05
+    r = np.atleast_2d(np.asarray(returns, dtype=np.float64))
+    vol = np.abs(r)
+    results: Dict[str, float] = {}
+    for lag in range(1, min(lags, r.shape[1] - 1) + 1):
+        a = r[:, :-lag].ravel()
+        b = vol[:, lag:].ravel()
+        corr = float(np.corrcoef(a, b)[0, 1]) if a.std() > 0 and b.std() > 0 else 0.0
+        results[f"lag_{lag}"] = corr
+    vals = [v for v in results.values() if not np.isnan(v)]
+    results["mean_leverage_corr"] = float(np.mean(vals)) if vals else 0.0
+    results["has_leverage_effect"] = results["mean_leverage_corr"] < threshold
     return results
 
 
 def check_volume_volatility_correlation(
     volume: np.ndarray,
-    volatility: np.ndarray,
+    returns: np.ndarray,
 ) -> Dict[str, float]:
-    """Check for positive volume-volatility correlation.
+    """Volume-volatility correlation: corr(volume_t, |r_t|) is typically positive.
 
     Args:
-        volume: Trading volume, shape (N,).
-        volatility: Realized volatility, shape (N,).
+        volume: Volume feature (any monotone transform), same shape as returns.
+        returns: Log returns.
 
     Returns:
         Dict with Pearson and Spearman correlations.
     """
-    pearson_corr, pearson_p = stats.pearsonr(volume, volatility)
-    spearman_corr, spearman_p = stats.spearmanr(volume, volatility)
+    v = np.asarray(volume, dtype=np.float64).ravel()
+    a = np.abs(np.asarray(returns, dtype=np.float64).ravel())
+    if v.std() == 0 or a.std() == 0:
+        return {
+            "pearson_correlation": 0.0,
+            "spearman_correlation": 0.0,
+            "has_vol_volume_corr": False,
+        }
+    pearson_corr, pearson_p = stats.pearsonr(v, a)
+    spearman_corr, spearman_p = stats.spearmanr(v, a)
     return {
         "pearson_correlation": float(pearson_corr),
         "pearson_p_value": float(pearson_p),
         "spearman_correlation": float(spearman_corr),
         "spearman_p_value": float(spearman_p),
-        "has_vol_volume_corr": pearson_corr > 0.1,
+        "has_vol_volume_corr": bool(spearman_corr > 0.1),
     }
 
 
 def check_all_stylized_facts(
     returns: np.ndarray,
-    volume: np.ndarray,
-    volatility: np.ndarray,
+    volume: Optional[np.ndarray] = None,
 ) -> Dict[str, dict]:
-    """Run all stylized facts checks.
+    """Run all stylized-fact checks.
 
     Args:
-        returns: Log returns array, shape (N,).
-        volume: Volume array, shape (N,).
-        volatility: Realized volatility array, shape (N,).
+        returns: Unscaled log returns, shape (T,) or (N, T).
+        volume: Optional volume feature with the same shape.
 
     Returns:
         Nested dict with results for each stylized fact.
     """
-    return {
+    out = {
         "fat_tails": check_fat_tails(returns),
         "volatility_clustering": check_volatility_clustering(returns),
-        "leverage_effect": check_leverage_effect(returns, volatility),
-        "volume_volatility_correlation": check_volume_volatility_correlation(volume, volatility),
+        "leverage_effect": check_leverage_effect(returns),
     }
+    if volume is not None:
+        out["volume_volatility_correlation"] = check_volume_volatility_correlation(volume, returns)
+    return out

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 import torch
 from torch import Tensor
@@ -43,9 +42,7 @@ def ddpm_sample(
         sqrt_recip_alpha = torch.sqrt(1.0 / model.alphas[t_idx])  # type: ignore[index]
         sqrt_one_minus_alpha_bar = model.sqrt_one_minus_alphas_cumprod[t_idx]  # type: ignore[index]
 
-        x = sqrt_recip_alpha * (
-            x - betas_t / sqrt_one_minus_alpha_bar * predicted_noise
-        )
+        x = sqrt_recip_alpha * (x - betas_t / sqrt_one_minus_alpha_bar * predicted_noise)
 
         if t_idx > 0:
             posterior_var = model.posterior_variance[t_idx]  # type: ignore[index]
@@ -100,10 +97,11 @@ def ddim_sample(
         # DDIM update
         x0_pred = (x - torch.sqrt(1 - alpha_bar_t) * predicted_noise) / torch.sqrt(alpha_bar_t)
         sigma = (
-            eta * torch.sqrt((1 - alpha_bar_prev) / (1 - alpha_bar_t)) *
-            torch.sqrt(1 - alpha_bar_t / alpha_bar_prev)
+            eta
+            * torch.sqrt((1 - alpha_bar_prev) / (1 - alpha_bar_t))
+            * torch.sqrt(1 - alpha_bar_t / alpha_bar_prev)
         )
-        direction = torch.sqrt(1 - alpha_bar_prev - sigma ** 2) * predicted_noise
+        direction = torch.sqrt(1 - alpha_bar_prev - sigma**2) * predicted_noise
         noise = sigma * torch.randn_like(x) if eta > 0 else 0.0
         x = torch.sqrt(alpha_bar_prev) * x0_pred + direction + noise
 
