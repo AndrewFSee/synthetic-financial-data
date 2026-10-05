@@ -50,7 +50,8 @@ Sampling:   x_T ~ N(0,I) ──→[denoise T steps]──→ x_0
 
 ```
 Encoder:  X ──→[LSTM]──→ (μ, σ²)  ──→[reparameterize]──→ z
-Decoder:  z ──→[LSTM]──→ X̂
+Decoder:  z ──→[LSTM]──→ (mean_t, σ_t) ──→ X̂ = mean + σ·u,  u_t = ρ·u_{t-1} + √(1−ρ²)·ε_t
+          (Gaussian likelihood with AR(1) noise; ρ learned per feature)
 Copula:   μ(X_train) ──→ Fit Gaussian/Student-t Copula   (after training)
 Generate: Copula.sample() ──→ z ──→ Decoder ──→ X_synthetic
 ```

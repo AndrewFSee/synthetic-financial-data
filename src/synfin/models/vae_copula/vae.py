@@ -40,9 +40,22 @@ class VAECopula(nn.Module):
         rnn_type: "lstm" or "gru".
         dropout: Dropout rate.
         kl_weight: Beta parameter (1.0 = standard VAE, >1 = β-VAE).
-        recon_loss: Reconstruction loss, "mse" or "mae".
+        recon_loss: Observation model / reconstruction loss:
+
+            * ``"gaussian"`` (default): the decoder predicts a mean and a
+              log-variance per step; the loss is the Gaussian negative
+              log-likelihood plus KL (a proper ELBO), and :meth:`generate`
+              samples ``mean + sigma * eps``. Needed for return-like data,
+              where most variance is step-to-step noise that a mean-only
+              decoder cannot produce (its samples are smooth, strongly
+              autocorrelated and far too calm).
+            * ``"mse"`` / ``"mae"``: legacy mean-only decoder; generation
+              returns the decoder mean.
         copula_type: "gaussian" or "student_t".
         copula_df: Degrees of freedom of the Student-t copula.
+        ar_noise: With the Gaussian observation model, make the noise AR(1)
+            with a learned per-feature persistence, so persistent features
+            (e.g. relative volume) keep their step-to-step autocorrelation.
     """
 
     def __init__(
@@ -55,13 +68,14 @@ class VAECopula(nn.Module):
         rnn_type: str = "lstm",
         dropout: float = 0.1,
         kl_weight: float = 1.0,
-        recon_loss: str = "mse",
+        recon_loss: str = "gaussian",
         copula_type: str = "gaussian",
         copula_df: float = 4.0,
+        ar_noise: bool = True,
     ) -> None:
         super().__init__()
-        if recon_loss not in ("mse", "mae"):
-            raise ValueError(f"Unknown recon_loss {recon_loss!r}; use 'mse' or 'mae'.")
+        if recon_loss not in ("gaussian", "mse", "mae"):
+            raise ValueError(f"Unknown recon_loss {recon_loss!r}; use 'gaussian', 'mse' or 'mae'.")
         get_copula(copula_type, latent_dim, df=copula_df)  # validates copula_type
         self.latent_dim = latent_dim
         self.kl_weight = kl_weight
@@ -89,6 +103,8 @@ class VAECopula(nn.Module):
             num_layers=num_layers,
             rnn_type=rnn_type,
             dropout=dropout,
+            heteroscedastic=recon_loss == "gaussian",
+            ar_noise=ar_noise and recon_loss == "gaussian",
         )
 
     def reparameterize(self, mu: Tensor, log_var: Tensor) -> Tensor:
@@ -129,7 +145,10 @@ class VAECopula(nn.Module):
         log_var: Tensor,
         kl_weight: Optional[float] = None,
     ) -> Tuple[Tensor, Tensor, Tensor]:
-        """Compute the ELBO loss = reconstruction loss + β·KL divergence.
+        """Legacy loss for ``recon_loss`` "mse"/"mae": reconstruction + β·mean KL.
+
+        For the Gaussian observation model use :meth:`negative_elbo`, which
+        needs the decoder's log-variance.
 
         Args:
             x: Original sequences.
@@ -141,6 +160,8 @@ class VAECopula(nn.Module):
         Returns:
             Tuple of (total_loss, recon_loss, kl_loss).
         """
+        if self.recon_loss == "gaussian":
+            raise ValueError("Use negative_elbo() for the Gaussian observation model.")
         beta = kl_weight if kl_weight is not None else self.kl_weight
         if self.recon_loss == "mae":
             recon_loss = F.l1_loss(x_recon, x)
@@ -148,6 +169,35 @@ class VAECopula(nn.Module):
             recon_loss = F.mse_loss(x_recon, x)
         kl_loss = -0.5 * torch.mean(1 + log_var - mu.pow(2) - log_var.exp())
         return recon_loss + beta * kl_loss, recon_loss, kl_loss
+
+    def negative_elbo(
+        self, x: Tensor, kl_weight: Optional[float] = None
+    ) -> Tuple[Tensor, Tensor, Tensor]:
+        """Training objective for any ``recon_loss``: (loss, recon, kl).
+
+        For "gaussian" this is the negative ELBO per data element:
+        Gaussian NLL averaged over all elements, plus β times the latent KL
+        (summed over latent dims, averaged over the batch) divided by the
+        number of elements per sample, so the reconstruction/KL balance is
+        that of a true ELBO.
+
+        Args:
+            x: Sequences, shape (batch, seq_len, input_dim).
+            kl_weight: Optional override for beta.
+
+        Returns:
+            Tuple of (total_loss, recon_loss, kl_loss).
+        """
+        if self.recon_loss != "gaussian":
+            x_recon, mu, log_var = self(x)
+            return self.elbo_loss(x, x_recon, mu, log_var, kl_weight)
+        beta = kl_weight if kl_weight is not None else self.kl_weight
+        mu, log_var = self.encoder(x)
+        z = self.reparameterize(mu, log_var)
+        recon = self.decoder.nll(x, z)
+        elements = x.shape[1] * x.shape[2]
+        kl = (-0.5 * (1 + log_var - mu.pow(2) - log_var.exp()).sum(dim=1)).mean() / elements
+        return recon + beta * kl, recon, kl
 
     def training_step(
         self,
@@ -187,8 +237,7 @@ class VAECopula(nn.Module):
             for batch in dataloader:
                 x: Tensor = batch.to(device)
                 optimizer.zero_grad()
-                x_recon, mu, log_var = self(x)
-                loss, recon_loss, kl_loss = self.elbo_loss(x, x_recon, mu, log_var, beta)
+                loss, recon_loss, kl_loss = self.negative_elbo(x, beta)
                 loss.backward()
                 optimizer.step()
                 epoch_loss += loss.item()
@@ -218,20 +267,24 @@ class VAECopula(nn.Module):
         dataloader: DataLoader,
         device: torch.device = torch.device("cpu"),
     ) -> None:
-        """Fit the latent copula to the posterior means of the training data.
+        """Fit the latent copula to the aggregate posterior of the training data.
+
+        Uses one draw ``z = mu + sigma * eps`` per training sequence rather than
+        the posterior means alone, which would ignore each posterior's spread
+        and make sampled latents (and hence generated data) too concentrated.
 
         Args:
             dataloader: DataLoader with (training) sequences.
             device: Compute device.
         """
         self.eval()
-        mus = []
+        draws = []
         for batch in dataloader:
             if isinstance(batch, (list, tuple)):
                 batch = batch[0]
-            mu, _ = self.encoder(batch.to(device))
-            mus.append(mu.cpu())
-        z = torch.cat(mus).numpy()
+            mu, log_var = self.encoder(batch.to(device))
+            draws.append((mu + torch.exp(0.5 * log_var) * torch.randn_like(mu)).cpu())
+        z = torch.cat(draws).numpy()
         copula = get_copula(self.copula_type, self.latent_dim, df=self.copula_df).fit(z)
         self.copula_corr.copy_(torch.as_tensor(copula.corr_matrix, dtype=torch.float32))
         self.copula_mean.copy_(torch.as_tensor(copula.marginal_means, dtype=torch.float32))
@@ -276,4 +329,6 @@ class VAECopula(nn.Module):
             if use_copula:
                 logger.warning("Copula not fitted; sampling latents from the N(0, I) prior.")
             z = torch.randn(num_samples, self.latent_dim, device=device) * temperature
-        return self.decoder(z)
+        if self.recon_loss != "gaussian":
+            return self.decoder(z)
+        return self.decoder.sample(z)

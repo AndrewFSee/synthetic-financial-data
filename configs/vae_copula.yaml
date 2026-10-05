@@ -10,10 +10,13 @@ model:
   num_layers: 2               # encoder and decoder RNN layers
   latent_dim: 32
   dropout: 0.1
-  reconstruction_loss: "mse"  # "mse" or "mae"
+  # "gaussian": decoder predicts mean + variance per step and generation samples
+  # from it (needed for return-like data); "mse"/"mae": legacy mean-only decoder.
+  reconstruction_loss: "gaussian"
+  ar_noise: true              # AR(1) observation noise with learned per-feature persistence
 
-  # Latent copula, fitted to the encoder's posterior means after training and
-  # used for sampling instead of the N(0, I) prior.
+  # Latent copula, fitted to draws from the encoder's posteriors after training
+  # and used for sampling instead of the N(0, I) prior.
   copula:
     type: "gaussian"          # "gaussian" or "student_t"
     df: 4                     # degrees of freedom for the Student-t copula
