@@ -7,7 +7,7 @@ CHECKPOINT_DIR := checkpoints
 REPORT_DIR := reports
 
 # Override on the command line, e.g. `make pipeline MODEL=diffusion_ts TICKER=MSFT`
-MODEL ?= timegan
+MODEL ?= vae_copula
 TICKER ?= AAPL
 NUM_SAMPLES ?= 1000
 

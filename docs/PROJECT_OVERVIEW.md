@@ -116,6 +116,10 @@ on training rows only, and each split is windowed separately, so nothing leaks a
 
 ## Model 1 — TimeGAN (Yoon et al., NeurIPS 2019)
 
+> **Status: baseline only.** On AAPL returns it produces smooth paths, partially
+> collapses and exaggerates the leverage effect (see the README's model comparison).
+> The VAE + Copula model is the recommended default.
+
 Five RNN modules operating in a learned latent space: **Embedder** `X→H`, **Recovery** `H→X`,
 **Generator** `Z→Ê`, **Supervisor** (predicts next latent state), **Discriminator** `H→[0,1]`.
 Three-phase training:

@@ -13,12 +13,29 @@
 **synfin** is a Python package for generating and evaluating synthetic stock market data.
 It implements **four architectures** you can train and compare:
 
-| Model | Description | Reference |
-|-------|-------------|-----------|
-| **TimeGAN** | Recurrent GAN with temporal supervision | Yoon et al., NeurIPS 2019 |
-| **Diffusion (DDPM)** | 1D U-Net denoising diffusion model | Ho et al., NeurIPS 2020 |
-| **Diffusion-TS** | Transformer diffusion with trend/seasonal decomposition | Yuan & Qiao, ICLR 2024 |
-| **VAE + Copula** | Variational Autoencoder with copula dependency modeling | Kingma & Welling 2014 |
+| Model | Description | Status | Reference |
+|-------|-------------|--------|-----------|
+| **VAE + Copula** | Recurrent VAE; Student-t + GARCH observation noise; latent copula | **Recommended default** | Kingma & Welling 2014 |
+| **Diffusion-TS** | Transformer diffusion with trend/seasonal decomposition | Strong, slower to train | Yuan & Qiao, ICLR 2024 |
+| **Diffusion (DDPM)** | 1D U-Net denoising diffusion model | Not yet benchmarked on real data | Ho et al., NeurIPS 2020 |
+| **TimeGAN** | Recurrent GAN with temporal supervision | Baseline only (see below) | Yoon et al., NeurIPS 2019 |
+
+### Model comparison on real data (AAPL daily, 2015–2024)
+
+Same chronological split and evaluation for every model (see [Evaluation Methodology](#evaluation-methodology)). These are short CPU runs, so treat them as indicative rather than definitive.
+
+| | VAE + Copula | Diffusion-TS | TimeGAN |
+|---|---|---|---|
+| Training | 60 epochs, mean of 3 seeds | 150 epochs, 1 run | 60 epochs per phase, 1 run |
+| Realism score | **0.869** | 0.865 | 0.671 |
+| Discriminative score (1 = indistinguishable) | **0.633** | 0.534 | 0.000 |
+| Tails: trimmed kurtosis (real 4.68) | **4.43** | 3.26 | 7.16 |
+| Volatility clustering, \|r\| ACF (real 0.208) | 0.181 | 0.180 | 0.552 |
+| Privacy verdict | ok | ok | collapse |
+
+For reference, real AAPL data from a later, calmer period scores 0.766 against the training period, so higher scores mostly mean fitting the training period more closely.
+
+**Why TimeGAN is only a baseline:** on return data its recovery network produces smooth paths (lag-1 autocorrelation wrong in every channel), it partially mode-collapses, and it exaggerates the leverage effect about tenfold (−0.74 vs −0.065). A fair rescue would need roughly the paper's ~10,000 joint iterations (~750 epochs here). Its original benchmark used smooth price levels, not near-white-noise returns. It is kept, tested and documented as a reference point, but it isn't the default.
 
 The evaluation suite checks whether generated data reproduces the key **stylized facts** of financial returns:
 - 📊 Fat-tailed return distributions
@@ -30,7 +47,7 @@ The evaluation suite checks whether generated data reproduces the key **stylized
 
 ## Architecture Diagrams
 
-### TimeGAN (3-Phase Training)
+### TimeGAN (3-Phase Training, baseline)
 
 ```
 Phase 1 — Autoencoder:   X ──→ Embedder ──→ H ──→ Recovery ──→ X̂
@@ -130,7 +147,7 @@ Writes `data/raw/<TICKER>_1d.parquet`.
 ### 2. Train a model
 
 ```bash
-synfin-train --model timegan               # or diffusion, diffusion_ts, vae_copula
+synfin-train --model vae_copula            # or diffusion_ts, diffusion, timegan
 synfin-train --model diffusion_ts --config configs/diffusion_ts_quick.yaml --ticker MSFT
 ```
 
@@ -143,7 +160,7 @@ For models with a validation split, the checkpoint holds the best-validation wei
 ### 3. Generate synthetic data
 
 ```bash
-synfin-generate --checkpoint checkpoints/timegan.pt --num-samples 1000
+synfin-generate --checkpoint checkpoints/vae_copula.pt --num-samples 1000
 ```
 
 The model is rebuilt from the checkpoint and its samples are un-scaled to the original feature units. Output goes to `data/synthetic/<model>_<TICKER>.npz` with:
@@ -158,8 +175,8 @@ Diffusion sampling and VAE copula/temperature settings come from the config's `g
 ```bash
 synfin-evaluate \
     --real-data data/processed/AAPL_windows.npz \
-    --synthetic-data data/synthetic/timegan_AAPL.npz \
-    --output reports/timegan_AAPL
+    --synthetic-data data/synthetic/vae_copula_AAPL.npz \
+    --output reports/vae_copula_AAPL
 ```
 
 The real training windows are the reference, and the never-seen test windows are the holdout for the TSTR and privacy checks. Every `scripts/*.py` file is equivalent to the matching `synfin-*` command.
@@ -223,7 +240,8 @@ Pass windows in original units together with their feature names. Columns are fo
 - **ACF comparison**: autocorrelations pooled *within* windows, never across window boundaries.
 
 ### Stylized Facts (computed on unscaled log returns)
-- **Fat tails**: excess kurtosis, plus robust measures: kurtosis with the top 0.1% trimmed, the 99% and 99.9% quantiles of |r| in standard deviations, and the largest move. Raw kurtosis is dominated by a few extreme values (for AAPL, dropping the top 0.1% cuts it from 6.6 to 4.7), so compare the robust measures when judging tails.
+- **Fat tails**: excess kurtosis, plus robust measures: kurtosis with the top 0.1% trimmed, and the 99% and 99.9% quantiles of |r| in standard deviations. Raw kurtosis is dominated by a few extreme values (for AAPL, dropping the top 0.1% cuts it from 6.6 to 4.7), so compare the robust measures when judging tails.
+- **Extreme moves (size-matched)**: the largest |r| of synthetic samples drawn with as many days as the real data, compared with the real maximum (repeated draws). The maximum of a fat-tailed sample grows with sample size, so raw maxima from 30,000 generated days and ~1,750 real days aren't comparable. A calibrated generator gives a median ratio near 1 and exceeds the real maximum about half the time.
 - **Volatility clustering**: ACF of |r| and r².
 - **Leverage effect**: correlation between r_t and future |r_{t+k}|.
 - **Volume-volatility correlation**: correlation between volume and |r|.
@@ -297,7 +315,7 @@ python scripts/smoke_test.py                 # all four models on dummy data
 
 ## Makefile Reference
 
-`MODEL` (default `timegan`), `TICKER` (default `AAPL`) and `NUM_SAMPLES` can be overridden, e.g. `make pipeline MODEL=diffusion_ts`.
+`MODEL` (default `vae_copula`), `TICKER` (default `AAPL`) and `NUM_SAMPLES` can be overridden, e.g. `make pipeline MODEL=diffusion_ts`.
 
 | Command | Description |
 |---------|-------------|

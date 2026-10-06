@@ -19,6 +19,7 @@ from synfin.evaluation.stylized_facts import (
     check_fat_tails,
     check_leverage_effect,
     check_volatility_clustering,
+    extreme_move_check,
 )
 from synfin.evaluation.tstr import tstr_benchmark
 
@@ -139,6 +140,28 @@ def test_fat_tail_robust_measures():
     assert abs(spike["trimmed_excess_kurtosis"] - base["trimmed_excess_kurtosis"]) < 0.1
     assert abs(spike["q999_sd"] - base["q999_sd"]) < 0.2
     assert base["q99_sd"] == pytest.approx(2.576, abs=0.1)  # Gaussian 99% two-sided
+
+
+def test_extreme_move_check_is_size_matched():
+    """Same distribution: calibrated even though synthetic has 15x more days."""
+    rng = np.random.default_rng(6)
+    real = windows_of(rng.standard_normal(2000), 30)  # stride-1, 2000 unique days
+    synth = rng.standard_normal((1000, 30))  # 30,000 independent days
+    out = extreme_move_check(real, synth)
+    assert out["n_real_days"] == 2000
+    assert abs(out["n_matched_days"] - 2000) <= 30
+    assert np.abs(synth).max() / out["real_max"] > 1.1  # naive raw-max comparison misleads
+    assert 0.85 < out["max_ratio_median"] < 1.2
+    assert 0.2 < out["p_exceed_real_max"] < 0.8
+
+
+def test_extreme_move_check_flags_thin_tails():
+    rng = np.random.default_rng(7)
+    real = windows_of(rng.standard_t(3, 3000) / np.sqrt(3), 30)
+    synth = rng.standard_normal((1000, 30))  # same variance, Gaussian tails
+    out = extreme_move_check(real, synth)
+    assert out["max_ratio_median"] < 0.8
+    assert out["p_exceed_real_max"] < 0.2
 
 
 def test_volatility_clustering_detected_in_windows():

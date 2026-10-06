@@ -129,8 +129,16 @@ def main(argv=None) -> None:
             f"      trimmed (top 0.1%) {r['fat_tails']['trimmed_excess_kurtosis']:7.3f}  "
             f"{s['fat_tails']['trimmed_excess_kurtosis']:7.3f}"
         )
-        for key, label in [("q999_sd", "99.9% |r| (sd)"), ("max_sd", "max |r| (sd)")]:
-            print(f"      {label:16s} {r['fat_tails'][key]:7.2f}  {s['fat_tails'][key]:7.2f}")
+        print(
+            f"      99.9% |r| (sd)     {r['fat_tails']['q999_sd']:7.2f}  "
+            f"{s['fat_tails']['q999_sd']:7.2f}"
+        )
+        em = report["extreme_moves"]
+        print(
+            f"    largest move, size-matched: synthetic/real {em['max_ratio_median']:.2f} "
+            f"[{em['max_ratio_p5']:.2f}, {em['max_ratio_p95']:.2f}], "
+            f"P(exceeds real) {em['p_exceed_real_max']:.2f} (calibrated: ~1, ~0.5)"
+        )
         print(
             f"    |r| ACF (mean 1-10)  {r['volatility_clustering']['mean_abs_return_acf']:7.3f}  "
             f"{s['volatility_clustering']['mean_abs_return_acf']:7.3f}"
