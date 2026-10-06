@@ -227,6 +227,66 @@ def test_garch_noise_learns_volatility_feedback():
     assert ((s[:, 1:] * s[:, :-1]).sum() / (s * s).sum()).item() > 0.05
 
 
+def _fitted_small_vae():
+    torch.manual_seed(0)
+    data = torch.randn(96, 10, 3)
+    loader = torch.utils.data.DataLoader(data, batch_size=32)
+    vae = VAECopula(input_dim=3, hidden_dim=8, latent_dim=4, seq_length=10, num_layers=1)
+    vae.training_step(loader, torch.optim.Adam(vae.parameters(), lr=1e-2), epochs=3)
+    vae.fit_latent_sampler(loader)
+    return vae, data
+
+
+def test_posterior_sampler_stores_and_samples_aggregate_posterior():
+    vae, data = _fitted_small_vae()
+    assert vae.posterior_mu.shape == (96, 4)
+    with torch.no_grad():
+        mu, log_var = vae.encoder(data)
+    assert torch.allclose(vae.posterior_mu, mu)
+    # Latents sampled with temperature 0 are exactly stored posterior means.
+    torch.manual_seed(1)
+    out = vae.generate(16, sampler="posterior", temperature=0.0)
+    assert out.shape == (16, 10, 3)
+    for name in ("posterior", "copula", "prior", "auto"):
+        assert vae.generate(4, sampler=name).shape == (4, 10, 3)
+    with pytest.raises(ValueError):
+        vae.generate(4, sampler="nope")
+
+
+def test_posterior_buffers_survive_checkpoint_roundtrip(tmp_path):
+    from synfin.training.checkpoint import load_checkpoint, save_checkpoint
+
+    vae, _ = _fitted_small_vae()
+    kwargs = {"input_dim": 3, "hidden_dim": 8, "latent_dim": 4, "seq_length": 10, "num_layers": 1}
+    path = save_checkpoint(tmp_path / "v.pt", vae, model_name="vae_copula", model_kwargs=kwargs)
+    loaded, _ = load_checkpoint(path)  # fresh model has empty (0, 4) buffers
+    assert torch.equal(loaded.posterior_mu, vae.posterior_mu)
+    assert torch.equal(loaded.posterior_log_var, vae.posterior_log_var)
+    assert loaded.generate(4).shape == (4, 10, 3)
+
+
+def test_loads_checkpoint_saved_before_posterior_sampling():
+    """State dicts without posterior buffers (older checkpoints) still load."""
+    vae, _ = _fitted_small_vae()
+    legacy = {k: v for k, v in vae.state_dict().items() if not k.startswith("posterior_")}
+    fresh = VAECopula(input_dim=3, hidden_dim=8, latent_dim=4, seq_length=10, num_layers=1)
+    fresh.load_state_dict(legacy)  # strict
+    assert len(fresh.posterior_mu) == 0
+    assert bool(fresh.copula_fitted)
+    assert fresh.generate(4).shape == (4, 10, 3)  # auto -> copula
+    with pytest.raises(RuntimeError):
+        fresh.load_state_dict({"not_a_key": torch.zeros(1)})  # other errors still raised
+
+
+def test_unfitted_sampler_errors_and_auto_falls_back():
+    vae = VAECopula(input_dim=3, hidden_dim=8, latent_dim=4, seq_length=10, num_layers=1)
+    with pytest.raises(RuntimeError):
+        vae.generate(2, sampler="posterior")
+    with pytest.raises(RuntimeError):
+        vae.generate(2, sampler="copula")
+    assert vae.generate(2).shape == (2, 10, 3)  # auto -> prior
+
+
 def test_noise_option_validation():
     with pytest.raises(ValueError):
         Decoder(latent_dim=2, output_dim=3, noise="laplace", heteroscedastic=True)

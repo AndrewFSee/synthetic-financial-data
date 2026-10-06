@@ -93,6 +93,10 @@ class VAECopula(nn.Module):
         self.register_buffer("copula_corr", torch.eye(latent_dim))
         self.register_buffer("copula_mean", torch.zeros(latent_dim))
         self.register_buffer("copula_std", torch.ones(latent_dim))
+        # Encoder posteriors of the training windows, for "posterior" latent sampling.
+        # Sized by fit_latent_sampler(); resized on checkpoint load.
+        self.register_buffer("posterior_mu", torch.empty(0, latent_dim))
+        self.register_buffer("posterior_log_var", torch.empty(0, latent_dim))
 
         self.encoder = Encoder(
             input_dim=input_dim,
@@ -270,36 +274,70 @@ class VAECopula(nn.Module):
 
         return histories
 
+    def _load_from_state_dict(
+        self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+    ):
+        # The stored posteriors are sized by the training set, so adopt the
+        # checkpoint's shape before the default (shape-checking) load.
+        names = ("posterior_mu", "posterior_log_var")
+        for name in names:
+            key = prefix + name
+            if key in state_dict:
+                setattr(self, name, torch.empty_like(state_dict[key]))
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+        )
+        # Checkpoints from before posterior sampling existed have no stored
+        # posteriors: keep the empty buffers ("auto" then uses the copula).
+        for name in names:
+            if prefix + name in missing_keys:
+                missing_keys.remove(prefix + name)
+
     @torch.no_grad()
-    def fit_copula(
+    def fit_latent_sampler(
         self,
         dataloader: DataLoader,
         device: torch.device = torch.device("cpu"),
     ) -> None:
-        """Fit the latent copula to the aggregate posterior of the training data.
+        """Prepare latent sampling from the aggregate posterior of the training data.
 
-        Uses one draw ``z = mu + sigma * eps`` per training sequence rather than
-        the posterior means alone, which would ignore each posterior's spread
-        and make sampled latents (and hence generated data) too concentrated.
+        Stores every training window's encoder posterior (for the default
+        ``"posterior"`` sampler) and fits the copula (for the ``"copula"``
+        sampler). The copula uses one draw ``z = mu + sigma * eps`` per window
+        rather than the posterior means alone, which would make sampled
+        latents too concentrated.
+
+        Note: the stored posteriors are a lossy encoding of the training
+        windows and are saved with the checkpoint.
 
         Args:
             dataloader: DataLoader with (training) sequences.
             device: Compute device.
         """
         self.eval()
-        draws = []
+        mus, log_vars = [], []
         for batch in dataloader:
             if isinstance(batch, (list, tuple)):
                 batch = batch[0]
             mu, log_var = self.encoder(batch.to(device))
-            draws.append((mu + torch.exp(0.5 * log_var) * torch.randn_like(mu)).cpu())
-        z = torch.cat(draws).numpy()
+            mus.append(mu.cpu())
+            log_vars.append(log_var.cpu())
+        mu, log_var = torch.cat(mus), torch.cat(log_vars)
+        self.posterior_mu = mu.to(self.copula_mean.device)
+        self.posterior_log_var = log_var.to(self.copula_mean.device)
+        z = (mu + torch.exp(0.5 * log_var) * torch.randn_like(mu)).numpy()
         copula = get_copula(self.copula_type, self.latent_dim, df=self.copula_df).fit(z)
         self.copula_corr.copy_(torch.as_tensor(copula.corr_matrix, dtype=torch.float32))
         self.copula_mean.copy_(torch.as_tensor(copula.marginal_means, dtype=torch.float32))
         self.copula_std.copy_(torch.as_tensor(copula.marginal_stds, dtype=torch.float32))
         self.copula_fitted.fill_(True)
-        logger.info("Fitted %s latent copula on %d samples.", self.copula_type, len(z))
+        logger.info("Fitted latent sampler on %d training windows.", len(z))
+
+    def fit_copula(
+        self, dataloader: DataLoader, device: torch.device = torch.device("cpu")
+    ) -> None:
+        """Alias of :meth:`fit_latent_sampler` (kept for backward compatibility)."""
+        self.fit_latent_sampler(dataloader, device)
 
     def _copula(self):
         copula = get_copula(self.copula_type, self.latent_dim, df=self.copula_df)
@@ -316,27 +354,61 @@ class VAECopula(nn.Module):
         device: torch.device = torch.device("cpu"),
         temperature: float = 1.0,
         use_copula: bool = True,
+        sampler: str = "auto",
     ) -> Tensor:
         """Generate synthetic sequences.
+
+        Latent samplers:
+
+        * ``"posterior"``: pick a training window at random and draw z from its
+          encoder posterior N(mu_i, sigma_i^2), i.e. sample the aggregate
+          posterior exactly. Reproduces rare regimes (e.g. crash-level
+          volatility) at their training frequency; a fitted Gaussian copula
+          smooths the non-Gaussian latent distribution and under-samples them.
+        * ``"copula"``: the fitted Gaussian / Student-t copula.
+        * ``"prior"``: N(0, I).
+        * ``"auto"`` (default): posterior if fitted, else copula, else prior.
 
         Args:
             num_samples: Number of sequences to generate.
             device: Compute device.
-            temperature: Scales the latent spread around its mean (>1 = more diverse).
-            use_copula: Sample latents from the fitted copula (falls back to the
-                N(0, I) prior if :meth:`fit_copula` has not been called).
+            temperature: Scales the latent spread (>1 = more diverse). For the
+                posterior sampler it scales each posterior's sigma.
+            use_copula: Legacy switch; False forces the prior sampler.
+            sampler: "auto", "posterior", "copula" or "prior".
 
         Returns:
             Synthetic sequences, shape (num_samples, seq_length, input_dim).
         """
         self.eval()
-        if use_copula and bool(self.copula_fitted):
+        if sampler not in ("auto", "posterior", "copula", "prior"):
+            raise ValueError(f"Unknown sampler {sampler!r}.")
+        if not use_copula:
+            sampler = "prior"
+        has_posterior = len(self.posterior_mu) > 0
+        if sampler == "auto":
+            if has_posterior:
+                sampler = "posterior"
+            elif bool(self.copula_fitted):
+                sampler = "copula"
+            else:
+                logger.warning("Latent sampler not fitted; sampling the N(0, I) prior.")
+                sampler = "prior"
+        if sampler == "posterior" and not has_posterior:
+            raise RuntimeError("No stored posteriors; call fit_latent_sampler() first.")
+        if sampler == "copula" and not bool(self.copula_fitted):
+            raise RuntimeError("Copula not fitted; call fit_latent_sampler() first.")
+
+        if sampler == "posterior":
+            idx = torch.randint(0, len(self.posterior_mu), (num_samples,))
+            mu = self.posterior_mu[idx].to(device)
+            std = torch.exp(0.5 * self.posterior_log_var[idx]).to(device)
+            z = mu + temperature * std * torch.randn_like(mu)
+        elif sampler == "copula":
             z = self._copula().sample_tensor(num_samples, device=device)
             mean = self.copula_mean.to(device)
             z = mean + (z - mean) * temperature
         else:
-            if use_copula:
-                logger.warning("Copula not fitted; sampling latents from the N(0, I) prior.")
             z = torch.randn(num_samples, self.latent_dim, device=device) * temperature
         if self.recon_loss != "gaussian":
             return self.decoder(z)

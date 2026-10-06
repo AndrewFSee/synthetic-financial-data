@@ -135,7 +135,7 @@ def train_vae_copula(data, device):
     ).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=1e-3)
     model.training_step(_loader(data), opt, epochs=EPOCHS, kl_annealing=False, device=device)
-    model.fit_copula(_loader(data), device=device)
+    model.fit_latent_sampler(_loader(data), device=device)
     return model.generate(N_WINDOWS, device=device).cpu().numpy()
 
 

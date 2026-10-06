@@ -25,7 +25,15 @@ class DiffusionModel(nn.Module):
     Implements:
       - Forward process: q(x_t | x_0) — add noise
       - Reverse process: p_θ(x_{t-1} | x_t) — denoise with UNet
-      - Training: predict noise ε from noisy x_t at timestep t
+      - Training: predict noise ε (``prediction="eps"``) or the velocity
+        v = sqrt(ᾱ_t)·ε − sqrt(1−ᾱ_t)·x_0 (``prediction="v"``) from noisy x_t
+
+    Why v-prediction: with ε-prediction the clean signal is recovered as
+    x_0 = (x_t − sqrt(1−ᾱ_t)·ε̂) / sqrt(ᾱ_t). At high noise levels ᾱ_t is tiny
+    (cosine schedule: ~1e-3 at the first DDIM step, ~1e-9 at t = T−1), so
+    small errors in ε̂ are amplified 30x to 20,000x: DDIM samples come out
+    several times too dispersed and ancestral sampling diverges. With v the
+    model never divides by sqrt(ᾱ_t) (Salimans & Ho, 2022).
 
     Args:
         in_channels: Number of time-series features.
@@ -39,6 +47,7 @@ class DiffusionModel(nn.Module):
         num_res_blocks: UNet residual blocks per level.
         dropout: Dropout rate.
         groups: GroupNorm groups in the UNet.
+        prediction: Network target, "eps" or "v" (recommended).
     """
 
     def __init__(
@@ -54,8 +63,12 @@ class DiffusionModel(nn.Module):
         num_res_blocks: int = 2,
         dropout: float = 0.1,
         groups: int = 8,
+        prediction: str = "eps",
     ) -> None:
         super().__init__()
+        if prediction not in ("eps", "v"):
+            raise ValueError(f"Unknown prediction {prediction!r}; use 'eps' or 'v'.")
+        self.prediction = prediction
         self.in_channels = in_channels
         self.seq_length = seq_length
         self.num_timesteps = num_timesteps
@@ -123,8 +136,30 @@ class DiffusionModel(nn.Module):
         t = torch.randint(0, self.num_timesteps, (batch_size,), device=device)
         noise = torch.randn_like(x0)
         xt = self.q_sample(x0, t, noise)
-        predicted_noise = self.denoiser(xt, t)
-        return nn.functional.mse_loss(predicted_noise, noise)
+        if self.prediction == "v":
+            a = self.sqrt_alphas_cumprod[t][:, None, None]  # type: ignore[index]
+            s = self.sqrt_one_minus_alphas_cumprod[t][:, None, None]  # type: ignore[index]
+            target = a * noise - s * x0
+        else:
+            target = noise
+        return nn.functional.mse_loss(self.denoiser(xt, t), target)
+
+    def predict_x0_eps(self, xt: Tensor, t: Tensor) -> tuple[Tensor, Tensor]:
+        """Predicted clean signal x_0 and noise ε for noisy input ``xt`` at ``t``.
+
+        Args:
+            xt: Noisy input, shape (batch, seq_len, features).
+            t: Timestep indices, shape (batch,).
+
+        Returns:
+            Tuple (x0_pred, eps_pred), each shaped like ``xt``.
+        """
+        out = self.denoiser(xt, t)
+        a = self.sqrt_alphas_cumprod[t][:, None, None]  # type: ignore[index]
+        s = self.sqrt_one_minus_alphas_cumprod[t][:, None, None]  # type: ignore[index]
+        if self.prediction == "v":
+            return a * xt - s * out, s * xt + a * out
+        return (xt - s * out) / a, out
 
     def forward(self, x0: Tensor) -> Tensor:
         """Compute training loss (alias for training_loss)."""

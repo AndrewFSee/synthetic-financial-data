@@ -360,7 +360,14 @@ def test_compute_all_metrics_end_to_end(tmp_path):
         output_dir=str(tmp_path),
     )
     assert "stylized_facts_real" in report and "tstr" in report
-    assert set(report["realism_components"]) == {"ks", "mmd", "tstr", "privacy", "discriminative"}
+    assert set(report["realism_components"]) == {
+        "ks",
+        "mmd",
+        "tstr",
+        "privacy",
+        "discriminative",
+        "stylized",
+    }
     assert all(0.0 <= v <= 1.0 for v in report["realism_components"].values())
     assert 0.0 <= report["realism_score"] <= 1.0
     json.loads((tmp_path / "evaluation_report.json").read_text())

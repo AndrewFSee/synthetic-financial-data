@@ -75,3 +75,57 @@ def test_diffusion_ddpm_sample(small_diffusion):
     """DDPM sampler produces correct shape."""
     samples = sample(small_diffusion, num_samples=2, seq_length=10, method="ddpm")
     assert samples.shape == (2, 10, 5)
+
+
+@pytest.mark.parametrize("prediction", ["eps", "v"])
+def test_predict_x0_eps_inverts_the_training_target(prediction):
+    """With an oracle denoiser, x0 and eps are recovered exactly in both modes."""
+    model = DiffusionModel(
+        in_channels=3,
+        seq_length=8,
+        num_timesteps=100,
+        noise_schedule="cosine",
+        hidden_dims=[8, 16, 8],
+        time_embed_dim=8,
+        num_res_blocks=1,
+        prediction=prediction,
+    )
+    torch.manual_seed(0)
+    x0, eps = torch.randn(4, 8, 3), torch.randn(4, 8, 3)
+    t = torch.tensor([0, 30, 80, 99])
+    xt = model.q_sample(x0, t, eps)
+    a = model.sqrt_alphas_cumprod[t][:, None, None]
+    s = model.sqrt_one_minus_alphas_cumprod[t][:, None, None]
+    oracle = eps if prediction == "eps" else a * eps - s * x0
+
+    class Oracle(torch.nn.Module):
+        def forward(self, x, tt):
+            return oracle
+
+    model.denoiser = Oracle()
+    x0_hat, eps_hat = model.predict_x0_eps(xt, t)
+    assert torch.allclose(eps_hat, eps, atol=1e-4)
+    assert torch.allclose(x0_hat, x0, atol=1e-3 if prediction == "v" else 1.0)
+
+
+def test_v_prediction_ancestral_sampling_stays_finite():
+    """Cosine schedule to t = T: ancestral sampling must not blow up (it did with eps)."""
+    torch.manual_seed(0)
+    model = DiffusionModel(
+        in_channels=3,
+        seq_length=8,
+        num_timesteps=200,
+        noise_schedule="cosine",
+        hidden_dims=[8, 16, 8],
+        time_embed_dim=8,
+        num_res_blocks=1,
+        prediction="v",
+    )
+    out = sample(model, 16, 8, method="ddpm")
+    assert torch.isfinite(out).all()
+    assert out.abs().max() < 50
+
+
+def test_unknown_prediction():
+    with pytest.raises(ValueError):
+        DiffusionModel(prediction="score")

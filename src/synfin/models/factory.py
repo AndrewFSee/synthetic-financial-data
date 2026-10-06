@@ -55,6 +55,7 @@ def model_kwargs_from_config(
             "num_res_blocks": unet.get("num_res_blocks", 2),
             "dropout": unet.get("dropout", 0.1),
             "groups": unet.get("group_norm_groups", 8),
+            "prediction": c.get("prediction", "eps"),
         }
     if model_name == "diffusion_ts":
         return {

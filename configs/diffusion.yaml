@@ -13,11 +13,19 @@ model:
   beta_start: 1.0e-4         # linear schedule only
   beta_end: 0.02             # linear schedule only
 
-  # U-Net denoiser (input channels come from the data)
+  # Network target: "v" (velocity) or "eps" (noise). With "eps" the clean signal is
+  # recovered by dividing by sqrt(alpha_bar_t), which near t = T amplifies errors
+  # 30x-20,000x under the cosine schedule (samples ~2.7x too dispersed on AAPL,
+  # ancestral sampling diverged). "v" avoids that division.
+  prediction: "v"
+
+  # U-Net denoiser (input channels come from the data). Sized for ~1-2k training
+  # windows: the former [64, 128, 256, 128, 64] x2 (1.7M params) overfit badly
+  # on AAPL (validation loss best at epoch 20 of 150); this one has ~118k.
   unet:
-    hidden_dims: [64, 128, 256, 128, 64]
-    time_embed_dim: 128
-    num_res_blocks: 2
+    hidden_dims: [32, 64, 64, 32]
+    time_embed_dim: 64
+    num_res_blocks: 1
     dropout: 0.1
     group_norm_groups: 8
 

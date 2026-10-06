@@ -23,8 +23,8 @@ model:
   noise_distribution: "student_t"
   garch_noise: true
 
-  # Latent copula, fitted to draws from the encoder's posteriors after training
-  # and used for sampling instead of the N(0, I) prior.
+  # Latent copula, fitted to draws from the encoder's posteriors after training;
+  # used when generation.latent_sampler is "copula".
   copula:
     type: "gaussian"          # "gaussian" or "student_t"
     df: 4                     # degrees of freedom for the Student-t copula
@@ -45,5 +45,9 @@ training:
 
 generation:
   num_samples: 1000
-  use_copula: true            # sample latents from the fitted copula
+  # Latent sampler: "posterior" samples the training windows' encoder posteriors
+  # (aggregate posterior), reproducing rare regimes such as crash-level volatility
+  # at their real frequency; "copula" (Gaussian fit, smooths them away) or "prior".
+  # Note: "posterior" stores each training window's posterior in the checkpoint.
+  latent_sampler: "posterior"
   temperature: 1.0            # latent spread multiplier
