@@ -22,6 +22,11 @@ model:
   # moves are calibrated (median 1.03x the real maximum; Gaussian only 0.79x).
   noise_distribution: "student_t"
   garch_noise: true
+  # Couple each feature's noise to the size of the return shock (learned per
+  # feature), so big moves come with high volume. On AAPL (3 seeds) the same-day
+  # corr(volume, |r|) went 0.11 -> 0.40 (real 0.46), validation NLL 0.303 -> 0.273,
+  # stylized score 0.723 -> 0.770; TSTR AUC fell 0.540 -> 0.503 in every seed.
+  magnitude_coupling: true
 
   # Latent copula, fitted to draws from the encoder's posteriors after training;
   # used when generation.latent_sampler is "copula".

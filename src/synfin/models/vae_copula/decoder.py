@@ -40,6 +40,17 @@ class Decoder(nn.Module):
     tails through changes in sigma, which leaves within-window tails too thin
     for daily returns.
 
+    With ``magnitude_driver`` set to the return feature's index, every other
+    feature's innovation is coupled to the size of the return innovation::
+
+        eta_f = sqrt(1 - c_f^2) * eps_f + c_f * h(eta_return),
+        h(eta) = (|eta| - E|eta|) / SD|eta|
+
+    with a learned c_f per feature. h has unit variance under the innovation
+    distribution, so each eta_f keeps unit variance. Without it the features'
+    noise is independent and big price moves don't come with high volume (on
+    AAPL the same-day corr(volume, |return|) is +0.46).
+
     With ``garch_noise=True`` the innovations get GARCH(1,1) volatility
     feedback on top of the decoder's sigma::
 
@@ -64,6 +75,9 @@ class Decoder(nn.Module):
         ar_noise: Use AR(1) observation noise (requires heteroscedastic).
         noise: Innovation distribution, "gaussian" or "student_t" (requires
             heteroscedastic).
+        magnitude_driver: Index of the return feature. If set, every other
+            feature's innovation is coupled to the size of the return
+            innovation (see the class docstring); requires heteroscedastic.
         garch_noise: Add GARCH(1,1) volatility feedback to the innovations
             (requires heteroscedastic).
     """
@@ -73,6 +87,7 @@ class Decoder(nn.Module):
     MIN_DF = 2.1  # unit-variance Student-t needs df > 2
     INIT_DF = 6.0  # typical of GARCH-t fits to daily returns
     MAX_PERSISTENCE = 0.99  # alpha + beta
+    MAX_ABS_COUPLING = 0.95
     INIT_ALPHA, INIT_PERSISTENCE = 0.05, 0.85
 
     def __init__(
@@ -88,8 +103,14 @@ class Decoder(nn.Module):
         ar_noise: bool = False,
         noise: str = "gaussian",
         garch_noise: bool = False,
+        magnitude_driver: Optional[int] = None,
     ) -> None:
         super().__init__()
+        if magnitude_driver is not None and not heteroscedastic:
+            raise ValueError("magnitude_driver requires heteroscedastic=True.")
+        if magnitude_driver is not None and not 0 <= magnitude_driver < output_dim:
+            raise ValueError(f"magnitude_driver {magnitude_driver} out of range.")
+        self.magnitude_driver = magnitude_driver
         if garch_noise and not heteroscedastic:
             raise ValueError("garch_noise requires heteroscedastic=True.")
         if ar_noise and not heteroscedastic:
@@ -135,6 +156,10 @@ class Decoder(nn.Module):
             self.garch_raw = nn.Parameter(torch.tensor([[raw_p], [raw_a]]).repeat(1, output_dim))
         else:
             self.garch_raw = None
+        # Magnitude coupling: c_f = MAX_ABS_COUPLING * tanh(raw_f), starting at 0.
+        self.coupling_raw = (
+            nn.Parameter(torch.zeros(output_dim)) if magnitude_driver is not None else None
+        )
 
     def noise_rho(self) -> Tensor:
         """Per-feature AR(1) persistence of the observation noise (zeros if disabled)."""
@@ -147,6 +172,33 @@ class Decoder(nn.Module):
         if self.noise_df_raw is None:
             return None
         return self.MIN_DF + torch.exp(self.noise_df_raw)
+
+    def magnitude_coupling(self) -> Optional[Tensor]:
+        """Per-feature coupling c_f to the return shock's magnitude (0 for the driver)."""
+        if self.coupling_raw is None:
+            return None
+        mask = torch.ones_like(self.coupling_raw)
+        mask[self.magnitude_driver] = 0.0
+        return self.MAX_ABS_COUPLING * torch.tanh(self.coupling_raw) * mask
+
+    def _standardized_magnitude(self, eta_driver: Tensor) -> Tensor:
+        """h = (|eta| - E|eta|) / SD|eta| for the driver's unit-variance innovations."""
+        df = self.noise_df()
+        if df is None:
+            mean_abs = torch.tensor(math.sqrt(2.0 / math.pi), device=eta_driver.device)
+        else:
+            nu = df[self.magnitude_driver]
+            # E|T| for T ~ t(nu), times the unit-variance scale sqrt((nu - 2) / nu).
+            e_abs_t = torch.exp(
+                math.log(2.0)
+                + 0.5 * torch.log(nu)
+                + torch.lgamma((nu + 1) / 2)
+                - 0.5 * math.log(math.pi)
+                - torch.log(nu - 1)
+                - torch.lgamma(nu / 2)
+            )
+            mean_abs = e_abs_t * torch.sqrt((nu - 2.0) / nu)
+        return (eta_driver.abs() - mean_abs) / torch.sqrt(1.0 - mean_abs.pow(2))
 
     def garch_params(self) -> Optional[Tuple[Tensor, Tensor]]:
         """Per-feature GARCH (alpha, beta), or None if disabled."""
@@ -210,6 +262,13 @@ class Decoder(nn.Module):
             g = self._garch_scales(xi)
             nll = nll + 0.5 * torch.log(g)
             xi = xi / torch.sqrt(g)
+        coupling = self.magnitude_coupling()
+        if coupling is not None:
+            # eta_f = s_f * eps_f + c_f * h(eta_driver): recover the independent eps_f.
+            h = self._standardized_magnitude(xi[..., self.magnitude_driver])[..., None]
+            s = torch.sqrt(1.0 - coupling.pow(2))
+            xi = (xi - coupling * h) / s
+            nll = nll + torch.log(s)
         return (nll + self._innovation_nll(xi)).mean()
 
     def sample(self, z: Tensor) -> Tensor:
@@ -222,6 +281,10 @@ class Decoder(nn.Module):
         else:
             t = torch.distributions.StudentT(df).sample(mean.shape[:-1])
             eps = t * torch.sqrt((df - 2.0) / df)
+        coupling = self.magnitude_coupling()
+        if coupling is not None:
+            h = self._standardized_magnitude(eps[..., self.magnitude_driver])[..., None]
+            eps = torch.sqrt(1.0 - coupling.pow(2)) * eps + coupling * h
         if self.garch_raw is not None:
             alpha, beta = self.garch_params()
             g = torch.ones_like(eps[:, 0])
