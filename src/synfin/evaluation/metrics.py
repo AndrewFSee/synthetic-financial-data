@@ -29,7 +29,7 @@ from synfin.evaluation.statistical_tests import (
     ks_test,
     mmd_rbf,
 )
-from synfin.evaluation.stylized_facts import check_all_stylized_facts
+from synfin.evaluation.stylized_facts import check_all_stylized_facts, extreme_move_check
 from synfin.evaluation.tstr import tstr_benchmark
 
 logger = logging.getLogger(__name__)
@@ -127,6 +127,9 @@ def compute_all_metrics(
         report["stylized_facts_synthetic"] = check_all_stylized_facts(
             synthetic[:, :, ret_idx],
             synthetic[:, :, vol_idx] if vol_idx is not None else None,
+        )
+        report["extreme_moves"] = extreme_move_check(
+            real[:, :, ret_idx], synthetic[:, :, ret_idx], seed=seed
         )
 
     # --- Discriminative score (classifier two-sample test on window dynamics) ---

@@ -29,6 +29,8 @@ def check_fat_tails(returns: np.ndarray) -> Dict[str, float]:
     measures are reported alongside it: quantiles of |r| in standard
     deviations, kurtosis with the largest 0.1% of |r| trimmed, and the single
     largest move in standard deviations. Compare those when judging tails.
+    ``max_sd`` grows with sample size, so it is not comparable between data
+    sets of different lengths; use :func:`extreme_move_check` for that.
 
     Args:
         returns: Log returns, shape (T,) or (N, T).
@@ -50,6 +52,62 @@ def check_fat_tails(returns: np.ndarray) -> Dict[str, float]:
         "q999_sd": float(np.percentile(dev, 99.9)),
         "max_sd": float(dev.max()),
         "is_fat_tailed": excess > 1.0,
+    }
+
+
+def _unique_days(windows: np.ndarray) -> np.ndarray:
+    """Underlying series of stride-1 sliding windows, else all values flattened."""
+    w = np.atleast_2d(windows)
+    if len(w) > 1 and np.allclose(w[:-1, 1:], w[1:, :-1]):
+        return np.concatenate([w[0], w[1:, -1]])
+    return w.ravel()
+
+
+def extreme_move_check(
+    real_returns: np.ndarray,
+    synthetic_returns: np.ndarray,
+    n_draws: int = 500,
+    seed: int = 0,
+) -> Dict[str, float]:
+    """Compare the largest absolute move at matched sample size.
+
+    The maximum of a fat-tailed sample grows with its size: 1,000 synthetic
+    windows of 30 steps hold far more independent days than ~1,750 real days
+    seen through overlapping windows, so their raw maxima are not comparable.
+    This draws whole synthetic windows (keeping clustering intact) until the
+    number of days matches the real sample, and repeats that ``n_draws`` times.
+    Overlapping stride-1 real windows are detected and counted once per day.
+
+    A well-calibrated generator gives ``max_ratio_median`` near 1 and
+    ``p_exceed_real_max`` near 0.5; lower values mean too-thin extremes,
+    higher values too-wild extremes.
+
+    Args:
+        real_returns: Real returns, shape (N, T) windows or (T,) series.
+        synthetic_returns: Synthetic return windows, shape (M, T).
+        n_draws: Number of size-matched draws.
+        seed: Random seed.
+
+    Returns:
+        Dict with the real maximum, the matched synthetic maxima (median and
+        5%/95% range, as ratios to the real maximum) and P(synthetic > real).
+    """
+    real_days = np.abs(_unique_days(np.asarray(real_returns, dtype=np.float64)))
+    syn = np.abs(np.atleast_2d(np.asarray(synthetic_returns, dtype=np.float64)))
+    real_max = float(real_days.max())
+    k = max(1, min(len(syn), int(round(len(real_days) / syn.shape[1]))))
+    rng = np.random.default_rng(seed)
+    ratios = np.array(
+        [syn[rng.choice(len(syn), k, replace=False)].max() / real_max for _ in range(n_draws)]
+    )
+    return {
+        "real_max": real_max,
+        "n_real_days": int(len(real_days)),
+        "n_matched_days": int(k * syn.shape[1]),
+        "max_ratio_median": float(np.median(ratios)),
+        "max_ratio_p5": float(np.percentile(ratios, 5)),
+        "max_ratio_p95": float(np.percentile(ratios, 95)),
+        "p_exceed_real_max": float((ratios > 1.0).mean()),
     }
 
 

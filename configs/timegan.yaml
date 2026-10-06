@@ -1,4 +1,8 @@
 # TimeGAN configuration (Yoon et al., NeurIPS 2019)
+#
+# Status: baseline only. On AAPL returns it produces smooth paths, partially
+# collapses and exaggerates the leverage effect; see README "Model comparison".
+# Prefer vae_copula (recommended) or diffusion_ts.
 
 defaults:
   - default
