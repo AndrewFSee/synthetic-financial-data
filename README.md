@@ -51,7 +51,8 @@ Sampling:   x_T ~ N(0,I) ──→[denoise T steps]──→ x_0
 ```
 Encoder:  X ──→[LSTM]──→ (μ, σ²)  ──→[reparameterize]──→ z
 Decoder:  z ──→[LSTM]──→ (mean_t, σ_t) ──→ X̂ = mean + σ·u,  u_t = ρ·u_{t-1} + √(1−ρ²)·ε_t
-          (Gaussian likelihood with AR(1) noise; ρ learned per feature)
+          ε_t: Student-t (learned df) with GARCH(1,1) volatility feedback (default config);
+          ρ, df and GARCH α/β are learned per feature, and the likelihood is exact
 Copula:   μ(X_train) ──→ Fit Gaussian/Student-t Copula   (after training)
 Generate: Copula.sample() ──→ z ──→ Decoder ──→ X_synthetic
 ```
@@ -222,7 +223,7 @@ Pass windows in original units together with their feature names. Columns are fo
 - **ACF comparison**: autocorrelations pooled *within* windows, never across window boundaries.
 
 ### Stylized Facts (computed on unscaled log returns)
-- **Fat tails**: excess kurtosis.
+- **Fat tails**: excess kurtosis, plus robust measures: kurtosis with the top 0.1% trimmed, the 99% and 99.9% quantiles of |r| in standard deviations, and the largest move. Raw kurtosis is dominated by a few extreme values (for AAPL, dropping the top 0.1% cuts it from 6.6 to 4.7), so compare the robust measures when judging tails.
 - **Volatility clustering**: ACF of |r| and r².
 - **Leverage effect**: correlation between r_t and future |r_{t+k}|.
 - **Volume-volatility correlation**: correlation between volume and |r|.

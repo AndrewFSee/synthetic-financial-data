@@ -22,19 +22,33 @@ from synfin.evaluation.statistical_tests import pooled_acf
 
 
 def check_fat_tails(returns: np.ndarray) -> Dict[str, float]:
-    """Kurtosis of returns; daily equity returns typically have excess kurtosis > 1.
+    """Tail heaviness of returns; daily equity returns have excess kurtosis > 1.
+
+    Raw kurtosis is dominated by a handful of extreme values (for AAPL daily
+    returns, dropping the largest 0.1% cuts it from ~6.6 to ~4.7), so robust
+    measures are reported alongside it: quantiles of |r| in standard
+    deviations, kurtosis with the largest 0.1% of |r| trimmed, and the single
+    largest move in standard deviations. Compare those when judging tails.
 
     Args:
         returns: Log returns, shape (T,) or (N, T).
 
     Returns:
-        Dict with ``kurtosis`` (Pearson), ``excess_kurtosis`` and ``is_fat_tailed``.
+        Dict with ``kurtosis`` (Pearson), ``excess_kurtosis``,
+        ``trimmed_excess_kurtosis``, ``q99_sd``, ``q999_sd``, ``max_sd`` and
+        ``is_fat_tailed``.
     """
     r = np.asarray(returns, dtype=np.float64).ravel()
     excess = float(stats.kurtosis(r, fisher=True))
+    dev = np.abs(r - r.mean()) / (r.std() + 1e-12)
+    keep = dev < np.percentile(dev, 99.9)
     return {
         "kurtosis": excess + 3.0,
         "excess_kurtosis": excess,
+        "trimmed_excess_kurtosis": float(stats.kurtosis(r[keep], fisher=True)),
+        "q99_sd": float(np.percentile(dev, 99)),
+        "q999_sd": float(np.percentile(dev, 99.9)),
+        "max_sd": float(dev.max()),
         "is_fat_tailed": excess > 1.0,
     }
 

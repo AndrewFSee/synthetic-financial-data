@@ -56,6 +56,11 @@ class VAECopula(nn.Module):
         ar_noise: With the Gaussian observation model, make the noise AR(1)
             with a learned per-feature persistence, so persistent features
             (e.g. relative volume) keep their step-to-step autocorrelation.
+        noise: Innovation distribution of the Gaussian observation model's
+            noise, "gaussian" or "student_t" (learned df per feature; gives
+            fat tails within a window).
+        garch_noise: Add GARCH(1,1) volatility feedback to the observation noise,
+            so large moves cluster (Gaussian observation model only).
     """
 
     def __init__(
@@ -72,6 +77,8 @@ class VAECopula(nn.Module):
         copula_type: str = "gaussian",
         copula_df: float = 4.0,
         ar_noise: bool = True,
+        noise: str = "gaussian",
+        garch_noise: bool = False,
     ) -> None:
         super().__init__()
         if recon_loss not in ("gaussian", "mse", "mae"):
@@ -105,6 +112,8 @@ class VAECopula(nn.Module):
             dropout=dropout,
             heteroscedastic=recon_loss == "gaussian",
             ar_noise=ar_noise and recon_loss == "gaussian",
+            noise=noise if recon_loss == "gaussian" else "gaussian",
+            garch_noise=garch_noise and recon_loss == "gaussian",
         )
 
     def reparameterize(self, mu: Tensor, log_var: Tensor) -> Tensor:
