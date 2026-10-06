@@ -12,6 +12,19 @@ from scipy.stats import ks_2samp
 logger = logging.getLogger(__name__)
 
 
+def is_sliding_windows(windows: np.ndarray) -> bool:
+    """True if consecutive windows are stride-1 shifts of one series (they share days)."""
+    w = np.asarray(windows)
+    return len(w) > 1 and bool(np.allclose(w[:-1, 1:], w[1:, :-1]))
+
+
+def block_bootstrap_indices(n: int, block: int, rng: np.random.Generator) -> np.ndarray:
+    """Indices for one moving-block bootstrap resample of ``n`` ordered items."""
+    n_blocks = max(1, int(np.ceil(n / block)))
+    starts = rng.integers(0, max(1, n - block + 1), size=n_blocks)
+    return (starts[:, None] + np.arange(block)[None, :]).ravel()[:n]
+
+
 def ks_test(
     real: np.ndarray,
     synthetic: np.ndarray,

@@ -185,7 +185,9 @@ def _realism_components(report: Dict) -> Dict[str, float]:
 
     * ``ks``: 1 - mean KS statistic (average marginal CDF agreement).
     * ``mmd``: 1 - sqrt(MMD²), clipped to [0, 1] (joint window distribution).
-    * ``tstr``: 1 - 2 * |TRTR - TSTR| AUC gap, clipped (downstream usefulness).
+    * ``tstr``: max(0, 1 - |z| / 4) with z = (TRTR - TSTR AUC gap) / its paired
+      bootstrap standard error (downstream usefulness, judged against the
+      noise of the small real test set; same scale as the stylized terms).
       0 if a classifier could not even be trained on the synthetic data (its
       labels were all one class, e.g. near-constant generated volatility).
     * ``privacy``: 1 - excess memorization rate (d1/d2 test), scaled so the
@@ -211,7 +213,7 @@ def _realism_components(report: Dict) -> Dict[str, float]:
         comps["mmd"] = float(np.clip(1.0 - np.sqrt(max(report["mmd"], 0.0)), 0.0, 1.0))
     tstr = report.get("tstr", {})
     if "tstr_gap" in tstr:
-        comps["tstr"] = max(0.0, 1.0 - 2.0 * abs(tstr["tstr_gap"]["auc"]))
+        comps["tstr"] = max(0.0, 1.0 - abs(tstr["tstr_gap"].get("auc_z", 0.0)) / 4.0)
     elif "auc" in tstr.get("trtr", {}) and "skipped" in tstr.get("tstr", {}):
         comps["tstr"] = 0.0
     if "membership_inference" in report.get("privacy", {}):
