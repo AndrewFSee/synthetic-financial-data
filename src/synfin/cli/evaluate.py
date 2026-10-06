@@ -100,6 +100,13 @@ def main(argv=None) -> None:
     print(f"  Overall realism score: {report['realism_score']:.3f} / 1.000")
     for k, v in report["realism_components"].items():
         print(f"    {k:14s} {v:.3f}")
+    if "stylized_agreement" in report:
+        print("  Stylized terms (term, z = gap in standard errors):")
+        for name, t in report["stylized_agreement"]["terms"].items():
+            print(
+                f"    {name:22s} {t['term']:.2f}  z={t['z']:+5.1f}  "
+                f"(real {t['real']:.3f}, synthetic {t['synthetic']:.3f})"
+            )
     print(f"  MMD^2 (median-heuristic RBF): {report['mmd']:.4f}")
     if "tstr_gap" in report.get("tstr", {}):
         t = report["tstr"]

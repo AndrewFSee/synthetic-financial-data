@@ -274,14 +274,24 @@ class VAECopula(nn.Module):
 
         return histories
 
-    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+    def _load_from_state_dict(
+        self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+    ):
         # The stored posteriors are sized by the training set, so adopt the
         # checkpoint's shape before the default (shape-checking) load.
-        for name in ("posterior_mu", "posterior_log_var"):
+        names = ("posterior_mu", "posterior_log_var")
+        for name in names:
             key = prefix + name
             if key in state_dict:
                 setattr(self, name, torch.empty_like(state_dict[key]))
-        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+        )
+        # Checkpoints from before posterior sampling existed have no stored
+        # posteriors: keep the empty buffers ("auto" then uses the copula).
+        for name in names:
+            if prefix + name in missing_keys:
+                missing_keys.remove(prefix + name)
 
     @torch.no_grad()
     def fit_latent_sampler(

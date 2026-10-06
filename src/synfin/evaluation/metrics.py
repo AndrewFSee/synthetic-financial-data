@@ -30,6 +30,7 @@ from synfin.evaluation.statistical_tests import (
     mmd_rbf,
 )
 from synfin.evaluation.stylized_facts import check_all_stylized_facts, extreme_move_check
+from synfin.evaluation.stylized_score import stylized_agreement
 from synfin.evaluation.tstr import tstr_benchmark
 
 logger = logging.getLogger(__name__)
@@ -131,6 +132,13 @@ def compute_all_metrics(
         report["extreme_moves"] = extreme_move_check(
             real[:, :, ret_idx], synthetic[:, :, ret_idx], seed=seed
         )
+        report["stylized_agreement"] = stylized_agreement(
+            real[:, :, ret_idx],
+            synthetic[:, :, ret_idx],
+            real[:, :, vol_idx] if vol_idx is not None else None,
+            synthetic[:, :, vol_idx] if vol_idx is not None else None,
+            seed=seed,
+        )
 
     # --- Discriminative score (classifier two-sample test on window dynamics) ---
     if min(len(real), len(synthetic)) >= 20:
@@ -190,6 +198,11 @@ def _realism_components(report: Dict) -> Dict[str, float]:
       and MMD on flattened windows is dominated by per-step noise), so without
       this term i.i.d. noise with the right mean/std scores almost as well as
       real data.
+    * ``stylized``: noise-aware agreement on robust stylized facts (see
+      :mod:`synfin.evaluation.stylized_score`). The components above judge windows mostly
+      one at a time, so a model that matches individual windows but not the
+      differences *between* calm and turbulent windows (volatility clustering
+      across windows, crash regimes, tails) could otherwise score highest.
     """
     comps: Dict[str, float] = {}
     if report.get("ks_tests"):
@@ -207,6 +220,8 @@ def _realism_components(report: Dict) -> Dict[str, float]:
         comps["privacy"] = float(np.clip(1.0 - excess, 0.0, 1.0))
     if "discriminative" in report:
         comps["discriminative"] = report["discriminative"]["score"]
+    if "stylized_agreement" in report:
+        comps["stylized"] = report["stylized_agreement"]["score"]
     return comps
 
 

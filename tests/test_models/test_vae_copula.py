@@ -265,6 +265,19 @@ def test_posterior_buffers_survive_checkpoint_roundtrip(tmp_path):
     assert loaded.generate(4).shape == (4, 10, 3)
 
 
+def test_loads_checkpoint_saved_before_posterior_sampling():
+    """State dicts without posterior buffers (older checkpoints) still load."""
+    vae, _ = _fitted_small_vae()
+    legacy = {k: v for k, v in vae.state_dict().items() if not k.startswith("posterior_")}
+    fresh = VAECopula(input_dim=3, hidden_dim=8, latent_dim=4, seq_length=10, num_layers=1)
+    fresh.load_state_dict(legacy)  # strict
+    assert len(fresh.posterior_mu) == 0
+    assert bool(fresh.copula_fitted)
+    assert fresh.generate(4).shape == (4, 10, 3)  # auto -> copula
+    with pytest.raises(RuntimeError):
+        fresh.load_state_dict({"not_a_key": torch.zeros(1)})  # other errors still raised
+
+
 def test_unfitted_sampler_errors_and_auto_falls_back():
     vae = VAECopula(input_dim=3, hidden_dim=8, latent_dim=4, seq_length=10, num_layers=1)
     with pytest.raises(RuntimeError):

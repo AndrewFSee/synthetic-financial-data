@@ -119,7 +119,10 @@ def check_volatility_clustering(returns: np.ndarray, max_lag: int = 10) -> Dict[
         max_lag: Maximum lag (capped at window length - 2).
 
     Returns:
-        Dict with the mean ACF of |r| and r^2 over lags 1..max_lag, and lag-1 values.
+        Dict with the mean ACF of |r| and r^2 over lags 1..max_lag, lag-1
+        values, ``extreme_clustering`` (P(a top-10% move within 3 steps after a
+        top-1% move); 0.10 means no clustering) and ``regime_dispersion`` (std
+        of log window volatility: how different calm and turbulent windows are).
     """
     r = np.atleast_2d(np.asarray(returns, dtype=np.float64))
     abs_acf = pooled_acf(np.abs(r), max_lag)
@@ -128,8 +131,22 @@ def check_volatility_clustering(returns: np.ndarray, max_lag: int = 10) -> Dict[
         "mean_abs_return_acf": float(abs_acf[1:].mean()),
         "mean_sq_return_acf": float(sq_acf[1:].mean()),
         "abs_return_acf_lag1": float(abs_acf[1]),
+        "extreme_clustering": _extreme_clustering(r),
+        "regime_dispersion": float(np.log(r.std(axis=1) + 1e-12).std()) if len(r) > 1 else 0.0,
         "has_clustering": bool(abs_acf[1:].mean() > 0.05),
     }
+
+
+def _extreme_clustering(r: np.ndarray, horizon: int = 3) -> float:
+    """P(|r_{t+k}| in top 10% | |r_t| in top 1%), pooled over k = 1..horizon within windows."""
+    a = np.abs(r)
+    hi, big = np.percentile(a, 99), np.percentile(a, 90)
+    hits = n = 0
+    for k in range(1, min(horizon, a.shape[1] - 1) + 1):
+        src = a[:, :-k] >= hi
+        hits += int((src & (a[:, k:] >= big)).sum())
+        n += int(src.sum())
+    return hits / n if n else 0.0
 
 
 def check_leverage_effect(
