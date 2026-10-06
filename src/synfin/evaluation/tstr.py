@@ -7,6 +7,11 @@ dynamics produces a visible TRTR-TSTR gap. Next-step *direction* is also
 available, but it is close to unpredictable, so TRTR and TSTR both sit near
 0.5 and the gap says little.
 
+The TRTR-TSTR AUC gap is judged against its own sampling noise: a paired
+block bootstrap over the real test windows (both classifiers scored on the
+same resample) gives its standard error. The real test set is small (a few
+hundred overlapping windows), so a raw gap of 0.04 can be pure noise.
+
 Labels use a threshold taken from the real training windows (a median), so
 the benchmark works in any monotone scaling of the return column. A fixed
 ``> 0`` threshold breaks under min-max scaling, where every return is >= 0.
@@ -21,6 +26,8 @@ import numpy as np
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from sklearn.preprocessing import StandardScaler
+
+from synfin.evaluation.statistical_tests import block_bootstrap_indices, is_sliding_windows
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +65,7 @@ def tstr_benchmark(
     real_test: Optional[np.ndarray] = None,
     test_ratio: float = 0.2,
     random_state: int = 42,
+    n_boot: int = 500,
 ) -> Dict[str, Dict[str, float]]:
     """Run TSTR against a TRTR (train-on-real) baseline on the same real test set.
 
@@ -69,10 +77,12 @@ def tstr_benchmark(
         real_test: Held-out real windows. If None, the last ``test_ratio`` of
             ``real_windows`` is used, separated by a one-window gap.
         test_ratio: Test fraction when ``real_test`` is None.
-        random_state: Classifier seed.
+        random_state: Classifier and bootstrap seed.
+        n_boot: Paired bootstrap replicates for the AUC gap's standard error.
 
     Returns:
-        Dict with "trtr" and "tstr" metrics (accuracy, f1, auc) and "tstr_gap".
+        Dict with "trtr" and "tstr" metrics (accuracy, f1, auc) and "tstr_gap"
+        (accuracy/f1/auc gaps plus ``auc_se`` and ``auc_z`` = gap / se).
     """
     if task not in TASKS:
         raise ValueError(f"Unknown TSTR task {task!r}; use one of {TASKS}.")
@@ -91,6 +101,7 @@ def tstr_benchmark(
     X_synth, y_synth = _prepare_classification_data(synthetic_windows, return_idx, task, threshold)
 
     results: Dict[str, Dict[str, float]] = {"task": {"name": task, "threshold": threshold}}
+    probs: Dict[str, np.ndarray] = {}
     for name, X_train, y_train in [
         ("trtr", X_train_real, y_train_real),
         ("tstr", X_synth, y_synth),
@@ -108,6 +119,7 @@ def tstr_benchmark(
         clf.fit(X_tr, y_train)
         y_pred = clf.predict(X_te)
         y_prob = clf.predict_proba(X_te)[:, 1]
+        probs[name] = y_prob
 
         results[name] = {
             "accuracy": float(accuracy_score(y_test, y_pred)),
@@ -126,4 +138,29 @@ def tstr_benchmark(
         results["tstr_gap"] = {
             k: results["trtr"][k] - results["tstr"][k] for k in ["accuracy", "f1", "auc"]
         }
+        se = _paired_auc_gap_se(
+            y_test, probs["trtr"], probs["tstr"], real_test, n_boot, random_state
+        )
+        results["tstr_gap"]["auc_se"] = se
+        results["tstr_gap"]["auc_z"] = results["tstr_gap"]["auc"] / se if se > 0 else 0.0
     return results
+
+
+def _paired_auc_gap_se(
+    y: np.ndarray,
+    p_trtr: np.ndarray,
+    p_tstr: np.ndarray,
+    test_windows: np.ndarray,
+    n_boot: int,
+    seed: int,
+) -> float:
+    """Bootstrap standard error of AUC(trtr) - AUC(tstr) on the same test resamples."""
+    rng = np.random.default_rng(seed)
+    block = 2 * test_windows.shape[1] if is_sliding_windows(test_windows[:, :, 0]) else 1
+    gaps = []
+    for _ in range(n_boot):
+        idx = block_bootstrap_indices(len(y), block, rng)
+        if len(np.unique(y[idx])) < 2:
+            continue
+        gaps.append(roc_auc_score(y[idx], p_trtr[idx]) - roc_auc_score(y[idx], p_tstr[idx]))
+    return float(np.std(gaps, ddof=1)) if len(gaps) > 1 else 0.0

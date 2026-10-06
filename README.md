@@ -16,8 +16,8 @@ It implements **four architectures** you can train and compare:
 | Model | Description | Status | Reference |
 |-------|-------------|--------|-----------|
 | **VAE + Copula** | Recurrent VAE; Student-t + GARCH noise with volume–volatility coupling | **Recommended default** | Kingma & Welling 2014 |
-| **Diffusion-TS** | Transformer diffusion with trend/seasonal decomposition | Strong, slower to train; thin tails | Yuan & Qiao, ICLR 2024 |
-| **Diffusion (DDPM)** | 1D U-Net denoising diffusion, v-prediction | Realistic windows, weak volatility clustering | Ho et al., NeurIPS 2020 |
+| **Diffusion-TS** | Transformer diffusion with trend/seasonal decomposition | Best stylized facts after the VAE; fails TSTR; slow to train | Yuan & Qiao, ICLR 2024 |
+| **Diffusion (DDPM)** | 1D U-Net denoising diffusion, v-prediction | Realistic single windows; weak clustering; fails TSTR | Ho et al., NeurIPS 2020 |
 | **TimeGAN** | Recurrent GAN with temporal supervision | Baseline only (see below) | Yoon et al., NeurIPS 2019 |
 
 ### Model comparison on real data (AAPL daily, 2015–2024)
@@ -27,18 +27,21 @@ Same chronological split and evaluation for every model (see [Evaluation Methodo
 | | VAE + Copula | Diffusion-TS | DDPM | TimeGAN |
 |---|---|---|---|---|
 | Training | 60 epochs, mean of 3 seeds | 150 epochs, batch 32, 1 run | 150 epochs, 1 run | 60 epochs per phase, 1 run |
-| Realism score (6 components) | 0.859 | 0.865 | **0.882** | 0.592 |
+| Realism score (6 components) | **0.787** | 0.729 | 0.750 | 0.456 |
 | Discriminative score (1 = indistinguishable) | 0.663 | 0.719 | **1.000** | 0.000 |
 | Stylized-facts score | **0.770** | 0.751 | 0.611 | 0.196 |
 | Tails: trimmed kurtosis (real 4.68) | 6.19 | **3.34** | 3.07 | 7.16 |
 | Volatility clustering, \|r\| ACF (real 0.208) | 0.235 | **0.192** | 0.086 | 0.552 |
 | Same-day corr(volume, \|r\|) (real 0.46) | 0.40 | 0.53 | — | — |
 | Largest stylized gap (z) | volume–volatility −2.3 | volume–volatility +2.6 | clustering −2.2 | regimes +12 |
+| TSTR gap (z; real baseline AUC 0.578) | +2.3 | +4.3 | +5.1 | +4.8 |
 | Privacy verdict | ok | ok | ok | collapse |
 
-**Read the headline score with its components.** DDPM still edges the realism score thanks to a perfect discriminative score: its individual windows are indistinguishable from real ones. Its stylized-facts score is the lowest of the three modern models, though (weak clustering and regime spread, thin tails), and it has the weakest TSTR (0.472 vs a real baseline of 0.578). With about 58 independent windows of AAPL history, gaps like its clustering shortfall (z = −2.2) are real but not dramatic. The VAE stays the recommended default: it has the best stylized-facts score, with clustering, crash-level regimes and a realistic volume–volatility link. That link used to be its one large failure (z = −12), because each feature's noise was independent so big moves didn't come with high volume. Magnitude coupling fixed it (z = −2.3). The model learned per-feature couplings of about +0.4 for volume, +0.08 for the overnight gap and −0.09 for the ranges, close to the real same-day correlations. The trade-off: TSTR fell from 0.540 to 0.503 (lower in every seed) and tails got a little heavier. Set `magnitude_coupling: false` to trade the link back for TSTR.
+**Read the headline score with its components.** Both diffusion models fail TSTR outright (gap > 4 standard errors): a volatility classifier trained on their data is no better than chance on real data, even though DDPM's individual windows are indistinguishable from real ones (discriminative 1.000). The VAE has the best realism and stylized-facts scores, with clustering, crash-level regimes and a realistic volume–volatility link (z = −12 before magnitude coupling, −2.3 after; the learned couplings of about +0.4 for volume, +0.08 for the overnight gap and −0.09 for the ranges track the real same-day correlations).
 
-For reference, real AAPL data from a later, calmer period scores 0.719 against the training period (stylized-facts score 0.483: thinner tails and less clustering than the training years), so higher scores mostly mean fitting the training period more closely.
+**Magnitude coupling is a trade-off on AAPL.** Without it, the VAE's TSTR gaps are within noise (z = 0.6 / 1.9 / 0.9 over 3 seeds) and its realism score is higher (0.830 vs 0.787). With it, two of three seeds have significant TSTR gaps (z = 1.1 / 3.2 / 2.8). On MSFT and JPM the coupled model scores higher on every summary score. The AAPL TSTR cost isn't explained by lagged volume effects: coupling brings the lagged volume–volatility correlations *closer* to real. Coupling also clearly improves held-out likelihood (validation NLL 0.303 → 0.273). Set `magnitude_coupling: false` to trade the volume link back for AAPL-style TSTR.
+
+For reference, real AAPL data from a later, calmer period scores 0.594 against the training period. Its stylized-facts score is 0.483 (thinner tails, less clustering), and it fails TSTR (z = 4.5), partly because of the regime change and partly because it has only ~375 windows to train a classifier on, against 1,000 for the generators.
 
 The VAE column uses the default `posterior` latent sampler. With it, crash-level windows (≥3× median volatility) appear at 1.6% of windows vs 1.8% in the real data, against 1.1% with the copula sampler.
 
@@ -46,7 +49,7 @@ The VAE column uses the default `posterior` latent sampler. With it, crash-level
 
 | | MSFT previous | MSFT default | JPM previous | JPM default |
 |---|---|---|---|---|
-| Realism score (6 components) | 0.883 | **0.923** | 0.841 | **0.886** |
+| Realism score (6 components) | 0.868 | **0.905** | 0.788 | **0.839** |
 | Discriminative | 0.783 | **0.838** | 0.714 | **0.720** |
 | Stylized-facts score | 0.653 | **0.839** | 0.544 | **0.792** |
 | Same-day corr(volume, \|r\|) (real: MSFT 0.43, JPM 0.48) | 0.11 | **0.38** | 0.06 | **0.38** |
@@ -54,7 +57,7 @@ The VAE column uses the default `posterior` latent sampler. With it, crash-level
 | Extreme clustering (real: MSFT 0.52, JPM 0.74) | 0.46 | **0.54** | 0.41 | **0.66** |
 | Window vol p99, × median (real: MSFT 4.47, JPM 5.49) | 2.57 | **3.95** | 2.73 | **5.57** |
 
-The current default beats the previous one on every ticker, on both the realism and stylized-facts scores. Its main remaining gap is tails that are somewhat too heavy (trimmed kurtosis above real on all three tickers). Magnitude coupling's TSTR effect is mixed: lower on AAPL (3 seeds) and MSFT, higher on JPM. JPM (2020 crash, 2023 regional-bank stress) is the hardest case: extremes still cluster less than in the real data (0.66 vs 0.74).
+The current default beats the previous one on every ticker, on both the realism and stylized-facts scores, and its TSTR gaps are within noise on MSFT and JPM. Trimmed kurtosis reads above real on all three tickers and extreme clustering below real on JPM (0.66 vs 0.74). Both gaps are within sampling noise (tail-weight z = +0.4 to +1.2, extreme-clustering z = −0.1 to −0.5), because these statistics are very uncertain with ~2,500 days of history. So they're not targets for further tuning.
 
 **Why TimeGAN is only a baseline:** on return data its recovery network produces smooth paths (lag-1 autocorrelation wrong in every channel), it partially mode-collapses, and it exaggerates the leverage effect about tenfold (−0.74 vs −0.065). A fair rescue would need roughly the paper's ~10,000 joint iterations (~750 epochs here). Its original benchmark used smooth price levels, not near-white-noise returns. It is kept, tested and documented as a reference point, but it isn't the default.
 
@@ -273,7 +276,7 @@ Pass windows in original units together with their feature names. Columns are fo
 - **Volume-volatility correlation**: correlation between volume and |r|.
 
 ### TSTR Benchmark (Train on Synthetic, Test on Real)
-A logistic classifier is trained on synthetic windows and tested on held-out real windows, against a train-on-real (TRTR) baseline. The default task predicts whether the next step's |return| is above the real median, which volatility clustering makes learnable. Next-day *direction* is also available, but it is close to unpredictable, so the gap says little. Label thresholds come from the real data, so any monotone scaling works. If a classifier can't be trained on the synthetic data at all, the TSTR score is 0.
+A logistic classifier is trained on synthetic windows and tested on held-out real windows, against a train-on-real (TRTR) baseline. The real test set is small (~350 overlapping windows), so the AUC gap is judged against its own noise: a paired block bootstrap over the test windows gives its standard error (typically 0.03–0.04), and the score component is `max(0, 1 − |z|/4)`, as for the stylized terms. The default task predicts whether the next step's |return| is above the real median, which volatility clustering makes learnable. Next-day *direction* is also available, but it is close to unpredictable, so the gap says little. Label thresholds come from the real data, so any monotone scaling works. If a classifier can't be trained on the synthetic data at all, the TSTR score is 0.
 
 ### Privacy and Collapse (calibrated against a real holdout)
 A generator that collapses toward the dense centre of the data produces samples close to many training records without copying any of them. Raw distance-to-closest-record can't tell that apart from memorization, so the two are measured separately:
@@ -291,9 +294,9 @@ A gradient-boosted classifier tries to tell real windows from synthetic ones usi
 ### Stylized-Facts Score
 The components above judge windows mostly one at a time, so they barely see the differences *between* windows (calm vs turbulent periods) that make up much of volatility clustering. This component scores six robust stylized facts of the returns: trimmed kurtosis, the 99% quantile of |r|, the ACF of |r|, extreme clustering, regime dispersion (the spread of log window volatility) and the volume–volatility correlation. Each gap is judged against its own sampling noise, `z = (synthetic − real) / √(SE_real² + SE_synthetic²)`, with standard errors from bootstraps (block bootstrap for the overlapping real windows). Each term is `max(0, 1 − |z|/4)`: a gap within noise scores about 0.75–1, 2 standard errors scores 0.5, and 4 or more scores 0. Fixed tolerances don't work, because independent samples of the *same* process at AAPL-like sizes scatter by 10–50% on several of these statistics. The per-term `z` values in the report show which fact a model gets wrong.
 
-The **realism score** is the mean of six components, each in [0, 1]: `1 − KS statistic`, `1 − √MMD²`, the TSTR gap score, the privacy score (`1 −` excess memorization rate), the discriminative score `1 − 2·(AUC − 0.5)`, and the stylized-facts score. They are all reported under `realism_components`.
+The **realism score** is the mean of six components, each in [0, 1]: `1 − KS statistic`, `1 − √MMD²`, the TSTR score (`1 − |z|/4` of the AUC gap), the privacy score (`1 −` excess memorization rate), the discriminative score `1 − 2·(AUC − 0.5)`, and the stylized-facts score. They are all reported under `realism_components`.
 
-As a sanity check on a known GARCH-t process, held-out data from the same process scores 0.94, time-shuffled data 0.83, and i.i.d. noise with matched mean and variance 0.64. The stylized-facts component alone gives 0.76, 0.48 and 0.00: shuffling keeps the tails but destroys every clustering term.
+As a sanity check on a known GARCH-t process, held-out data from the same process scores 0.89, time-shuffled data 0.75, and i.i.d. noise with matched mean and variance 0.57. The stylized-facts component alone gives 0.76, 0.48 and 0.00: shuffling keeps the tails but destroys every clustering term.
 
 ---
 

@@ -386,3 +386,24 @@ def test_compute_all_metrics_without_names_skips_return_metrics():
 def test_compute_all_metrics_rejects_wrong_names():
     with pytest.raises(ValueError):
         compute_all_metrics(np.zeros((60, 5, 2)), np.zeros((60, 5, 2)), feature_names=["a"])
+
+
+def test_is_sliding_windows_and_block_indices():
+    from synfin.evaluation.statistical_tests import block_bootstrap_indices, is_sliding_windows
+
+    series = np.arange(50.0)
+    assert is_sliding_windows(windows_of(series, 10))
+    assert not is_sliding_windows(np.random.default_rng(0).standard_normal((40, 10)))
+    idx = block_bootstrap_indices(37, 8, np.random.default_rng(1))
+    assert len(idx) == 37 and idx.min() >= 0 and idx.max() < 37
+
+
+def test_tstr_gap_has_bootstrap_standard_error():
+    """Same-process synthetic data: the AUC gap is within a few standard errors."""
+    real = _features(garch_returns(3000, seed=0, alpha=0.15, beta=0.8))
+    test = _features(garch_returns(800, seed=5, alpha=0.15, beta=0.8))
+    synth = _features(garch_returns(3000, seed=1, alpha=0.15, beta=0.8))
+    gap = tstr_benchmark(real, synth, return_idx=0, real_test=test, n_boot=200)["tstr_gap"]
+    assert gap["auc_se"] > 0
+    assert gap["auc_z"] == pytest.approx(gap["auc"] / gap["auc_se"])
+    assert abs(gap["auc_z"]) < 3

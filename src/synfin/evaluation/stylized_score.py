@@ -24,7 +24,11 @@ from typing import Dict, Optional
 import numpy as np
 from scipy import stats
 
-from synfin.evaluation.statistical_tests import pooled_acf
+from synfin.evaluation.statistical_tests import (
+    block_bootstrap_indices,
+    is_sliding_windows,
+    pooled_acf,
+)
 
 STATS = (
     "tail_weight",
@@ -83,12 +87,9 @@ def _bootstrap_se(
     rng: np.random.Generator,
 ) -> Dict[str, float]:
     """Bootstrap standard errors of :func:`stylized_stats` (block-resampling windows)."""
-    n = len(returns)
-    n_blocks = max(1, int(np.ceil(n / block)))
     draws = []
     for _ in range(n_boot):
-        starts = rng.integers(0, max(1, n - block + 1), size=n_blocks)
-        idx = (starts[:, None] + np.arange(block)[None, :]).ravel()[:n]
+        idx = block_bootstrap_indices(len(returns), block, rng)
         draws.append(stylized_stats(returns[idx], volume[idx] if volume is not None else None))
     return {k: float(np.std([d[k] for d in draws], ddof=1)) for k in draws[0]}
 
@@ -125,8 +126,7 @@ def stylized_agreement(
 
     def block_for(w: np.ndarray) -> int:
         # Overlapping stride-1 windows share most of their days: resample blocks.
-        sliding = len(w) > 1 and np.allclose(w[:-1, 1:], w[1:, :-1])
-        return 2 * T if sliding else 1
+        return 2 * T if is_sliding_windows(w) else 1
 
     se_real = _bootstrap_se(real_returns, rv, block_for(real_returns), n_boot, rng)
     se_synth = _bootstrap_se(synthetic_returns, sv, block_for(synthetic_returns), n_boot, rng)

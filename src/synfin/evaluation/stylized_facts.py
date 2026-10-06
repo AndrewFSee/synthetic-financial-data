@@ -18,7 +18,7 @@ from typing import Dict, Optional
 import numpy as np
 from scipy import stats
 
-from synfin.evaluation.statistical_tests import pooled_acf
+from synfin.evaluation.statistical_tests import is_sliding_windows, pooled_acf
 
 
 def check_fat_tails(returns: np.ndarray) -> Dict[str, float]:
@@ -58,7 +58,7 @@ def check_fat_tails(returns: np.ndarray) -> Dict[str, float]:
 def _unique_days(windows: np.ndarray) -> np.ndarray:
     """Underlying series of stride-1 sliding windows, else all values flattened."""
     w = np.atleast_2d(windows)
-    if len(w) > 1 and np.allclose(w[:-1, 1:], w[1:, :-1]):
+    if is_sliding_windows(w):
         return np.concatenate([w[0], w[1:, -1]])
     return w.ravel()
 
