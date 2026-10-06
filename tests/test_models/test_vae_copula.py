@@ -287,6 +287,73 @@ def test_unfitted_sampler_errors_and_auto_falls_back():
     assert vae.generate(2).shape == (2, 10, 3)  # auto -> prior
 
 
+def test_magnitude_coupling_nll_matches_manual_computation():
+    """Gaussian, no AR/GARCH: the coupled feature's density is N(c h, 1 - c^2) in eta space."""
+    torch.manual_seed(3)
+    dec = Decoder(
+        latent_dim=3,
+        hidden_dim=8,
+        output_dim=2,
+        seq_length=5,
+        num_layers=1,
+        heteroscedastic=True,
+        magnitude_driver=0,
+    )
+    with torch.no_grad():
+        dec.coupling_raw.fill_(0.8)
+    z, x = torch.randn(3, 3), torch.randn(3, 5, 2)
+    with torch.no_grad():
+        total = dec.nll(x, z).item() * x.numel()
+        mean, log_var = dec.forward_dist(z)
+        c = dec.magnitude_coupling()[1].item()
+    e = ((x - mean) * torch.exp(-0.5 * log_var)).numpy()
+    lv = log_var.numpy()
+    m = np.sqrt(2 / np.pi)
+    h = (np.abs(e[..., 0]) - m) / np.sqrt(1 - m**2)
+    s = np.sqrt(1 - c**2)
+    eps1 = (e[..., 1] - c * h) / s
+    expected = (0.5 * lv[..., 0] + 0.5 * e[..., 0] ** 2).sum() + (
+        0.5 * lv[..., 1] + np.log(s) + 0.5 * eps1**2
+    ).sum()
+    assert total == pytest.approx(expected, rel=1e-5)
+
+
+def test_magnitude_coupling_learns_volume_volatility_link():
+    """Feature 1 rises with |shock of feature 0| (c=0.6); feature 2 is unrelated."""
+    rng = np.random.default_rng(0)
+    n, t, c_true = 512, 20, 0.6
+    r = rng.standard_normal((n, t))
+    m = np.sqrt(2 / np.pi)
+    h = (np.abs(r) - m) / np.sqrt(1 - m**2)
+    vol = c_true * h + np.sqrt(1 - c_true**2) * rng.standard_normal((n, t))
+    data = np.stack([r, vol, rng.standard_normal((n, t))], axis=-1)
+    loader = torch.utils.data.DataLoader(
+        torch.tensor(data, dtype=torch.float32), batch_size=64, shuffle=True
+    )
+    torch.manual_seed(0)
+    vae = VAECopula(
+        input_dim=3, hidden_dim=16, latent_dim=2, seq_length=t, num_layers=1, magnitude_driver=0
+    )
+    vae.training_step(loader, torch.optim.Adam(vae.parameters(), lr=1e-2), epochs=30)
+    c = vae.decoder.magnitude_coupling().detach()
+    assert c[0] == 0 and c[1] > 0.4 and abs(c[2]) < 0.15
+    vae.fit_latent_sampler(loader)
+    s = vae.generate(512).numpy()
+    corr = lambda a, b: np.corrcoef(a.ravel(), b.ravel())[0, 1]  # noqa: E731
+    assert corr(s[..., 1], np.abs(s[..., 0])) > 0.3
+    assert abs(corr(s[..., 2], np.abs(s[..., 0]))) < 0.1
+
+
+def test_factory_wires_magnitude_coupling():
+    from synfin.models.factory import model_kwargs_from_config
+
+    cfg = {"magnitude_coupling": True}
+    names = ["OpenGap", "LogReturn", "LogVolumeRel"]
+    assert model_kwargs_from_config("vae_copula", 3, 10, cfg, names)["magnitude_driver"] == 1
+    assert model_kwargs_from_config("vae_copula", 3, 10, cfg)["magnitude_driver"] is None
+    assert model_kwargs_from_config("vae_copula", 3, 10, {}, names)["magnitude_driver"] is None
+
+
 def test_noise_option_validation():
     with pytest.raises(ValueError):
         Decoder(latent_dim=2, output_dim=3, noise="laplace", heteroscedastic=True)

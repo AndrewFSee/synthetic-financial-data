@@ -7,7 +7,7 @@ generation rebuilds the identical model with :func:`create_model`.
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Sequence
 
 import torch.nn as nn
 
@@ -19,6 +19,7 @@ def model_kwargs_from_config(
     input_dim: int,
     seq_length: int,
     model_cfg: Dict[str, Any],
+    feature_names: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """Translate a ``model`` config section into constructor kwargs.
 
@@ -27,6 +28,8 @@ def model_kwargs_from_config(
         input_dim: Number of features (taken from the data, not the config).
         seq_length: Window length (taken from the data).
         model_cfg: The ``model`` section of the merged config.
+        feature_names: Feature names (used to locate ``LogReturn`` for the
+            VAE's ``magnitude_coupling``).
 
     Returns:
         Keyword arguments for the model class.
@@ -89,6 +92,13 @@ def model_kwargs_from_config(
             "ar_noise": c.get("ar_noise", True),
             "noise": c.get("noise_distribution", "gaussian"),
             "garch_noise": c.get("garch_noise", False),
+            "magnitude_driver": (
+                list(feature_names).index("LogReturn")
+                if c.get("magnitude_coupling", False)
+                and feature_names is not None
+                and "LogReturn" in feature_names
+                else None
+            ),
             "copula_type": copula.get("type", "gaussian"),
             "copula_df": float(copula.get("df", 4.0)),
         }

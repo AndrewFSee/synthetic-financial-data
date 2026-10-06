@@ -140,7 +140,9 @@ def main(argv=None) -> None:
         data["feature_cols"],
     )
 
-    model_kwargs = model_kwargs_from_config(args.model, input_dim, seq_length, cfg.get("model", {}))
+    model_kwargs = model_kwargs_from_config(
+        args.model, input_dim, seq_length, cfg.get("model", {}), data["feature_cols"]
+    )
     model = create_model(args.model, model_kwargs).to(device)
     logger.info("Model: %s (%d parameters)", args.model, sum(p.numel() for p in model.parameters()))
 
