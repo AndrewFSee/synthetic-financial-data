@@ -155,6 +155,11 @@ class UNet1D(nn.Module):
                 )
                 ch = out_ch
 
+        # Level structure, so forward() routes skips exactly as built above.
+        self.num_res_blocks = num_res_blocks
+        self.num_encoder_levels = mid_idx + 1
+        self.num_decoder_levels = len(hidden_dims) - mid_idx - 1
+
         # Output projection
         self.output_norm = nn.GroupNorm(min(groups, ch), ch)
         self.output_proj = nn.Conv1d(ch, in_channels, 1)
@@ -176,22 +181,20 @@ class UNet1D(nn.Module):
 
         h = self.input_proj(x)
         skips = [h]
+        n = self.num_res_blocks
 
-        mid_idx = len(self.encoder_blocks) // 2 + 1
-        block_idx = 0
-
-        for block in self.encoder_blocks:
-            h = block(h, t_emb)
-            if block_idx < mid_idx - 1:
+        # Encoder: save one skip at the end of every level except the bottleneck.
+        for level in range(self.num_encoder_levels):
+            for block in self.encoder_blocks[level * n : (level + 1) * n]:
+                h = block(h, t_emb)
+            if level < self.num_encoder_levels - 1:
                 skips.append(h)
-            block_idx += 1
 
-        num_res_blocks = (len(self.decoder_blocks) // max(len(skips), 1)) or 1
-        for i, block in enumerate(self.decoder_blocks):
-            if i % num_res_blocks == 0 and skips:
-                skip = skips.pop()
-                h = torch.cat([h, skip], dim=1)
-            h = block(h, t_emb)
+        # Decoder: concatenate the matching skip before the first block of each level.
+        for level in range(self.num_decoder_levels):
+            h = torch.cat([h, skips.pop()], dim=1)
+            for block in self.decoder_blocks[level * n : (level + 1) * n]:
+                h = block(h, t_emb)
 
         h = self.act(self.output_norm(h))
         out = self.output_proj(h)

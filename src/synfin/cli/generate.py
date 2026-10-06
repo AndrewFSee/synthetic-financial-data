@@ -38,6 +38,12 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--ddim-steps", type=int, default=None)
     parser.add_argument("--temperature", type=float, default=None, help="VAE latent temperature")
     parser.add_argument("--no-copula", action="store_true", help="VAE: sample the N(0, I) prior")
+    parser.add_argument(
+        "--latent-sampler",
+        choices=["auto", "posterior", "copula", "prior"],
+        default=None,
+        help="VAE latent sampler (default: config generation.latent_sampler)",
+    )
     parser.add_argument("--batch-size", type=int, default=500)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--seed", type=int, default=42)
@@ -56,6 +62,7 @@ def sample_model(model, name: str, n: int, seq_length: int, gen_cfg: dict, devic
             device,
             temperature=gen_cfg.get("temperature", 1.0),
             use_copula=gen_cfg.get("use_copula", True),
+            sampler=gen_cfg.get("latent_sampler", "auto"),
         )
     if name == "diffusion":
         from synfin.models.diffusion.sampler import sample
@@ -84,6 +91,7 @@ def main(argv=None) -> None:
         "sampler": args.sampler,
         "ddim_steps": args.ddim_steps,
         "temperature": args.temperature,
+        "latent_sampler": args.latent_sampler,
     }
     gen_cfg.update({k: v for k, v in overrides.items() if v is not None})
     if args.no_copula:

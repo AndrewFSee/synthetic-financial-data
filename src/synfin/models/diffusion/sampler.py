@@ -36,13 +36,17 @@ def ddpm_sample(
 
     for t_idx in reversed(range(model.num_timesteps)):
         t_batch = torch.full((num_samples,), t_idx, device=device, dtype=torch.long)
-        predicted_noise = model.denoiser(x, t_batch)
+        x0_pred, _ = model.predict_x0_eps(x, t_batch)
 
-        betas_t = model.betas[t_idx]  # type: ignore[index]
-        sqrt_recip_alpha = torch.sqrt(1.0 / model.alphas[t_idx])  # type: ignore[index]
-        sqrt_one_minus_alpha_bar = model.sqrt_one_minus_alphas_cumprod[t_idx]  # type: ignore[index]
-
-        x = sqrt_recip_alpha * (x - betas_t / sqrt_one_minus_alpha_bar * predicted_noise)
+        # Posterior mean of q(x_{t-1} | x_t, x0): avoids dividing by sqrt(alpha_t),
+        # which blows up near t = T where the cosine schedule's betas reach 0.999.
+        beta_t = model.betas[t_idx]  # type: ignore[index]
+        alpha_bar_t = model.alphas_cumprod[t_idx]  # type: ignore[index]
+        alpha_bar_prev = model.alphas_cumprod_prev[t_idx]  # type: ignore[index]
+        alpha_t = model.alphas[t_idx]  # type: ignore[index]
+        coef_x0 = beta_t * torch.sqrt(alpha_bar_prev) / (1.0 - alpha_bar_t)
+        coef_xt = (1.0 - alpha_bar_prev) * torch.sqrt(alpha_t) / (1.0 - alpha_bar_t)
+        x = coef_x0 * x0_pred + coef_xt * x
 
         if t_idx > 0:
             posterior_var = model.posterior_variance[t_idx]  # type: ignore[index]
@@ -85,7 +89,7 @@ def ddim_sample(
 
     for i, t_idx in enumerate(timesteps):
         t_batch = torch.full((num_samples,), t_idx, device=device, dtype=torch.long)
-        predicted_noise = model.denoiser(x, t_batch)
+        x0_pred, predicted_noise = model.predict_x0_eps(x, t_batch)
 
         alpha_bar_t = model.alphas_cumprod[t_idx]  # type: ignore[index]
         alpha_bar_prev = (
@@ -95,7 +99,6 @@ def ddim_sample(
         )
 
         # DDIM update
-        x0_pred = (x - torch.sqrt(1 - alpha_bar_t) * predicted_noise) / torch.sqrt(alpha_bar_t)
         sigma = (
             eta
             * torch.sqrt((1 - alpha_bar_prev) / (1 - alpha_bar_t))
