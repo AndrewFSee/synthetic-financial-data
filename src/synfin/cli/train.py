@@ -210,9 +210,7 @@ def _train_vae(model, train_loader, val_loader, cfg, device, log_dir):
         beta = kl_weight * min(1.0, trainer.epoch / anneal_epochs) if anneal else kl_weight
         if not m.training:
             beta = kl_weight  # validate on the full objective so epochs are comparable
-        x_recon, mu, log_var = m(batch)
-        loss, _, _ = m.elbo_loss(batch, x_recon, mu, log_var, kl_weight=beta)
-        return loss
+        return m.negative_elbo(batch, kl_weight=beta)[0]
 
     history = trainer.train(
         train_loader,

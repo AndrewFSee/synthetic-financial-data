@@ -127,6 +127,20 @@ def test_check_fat_tails():
     assert not check_fat_tails(rng.standard_normal(5000))["is_fat_tailed"]
 
 
+def test_fat_tail_robust_measures():
+    """A single huge outlier dominates raw kurtosis but barely moves the robust measures."""
+    rng = np.random.default_rng(5)
+    r = rng.standard_normal(20000)
+    spiked = r.copy()
+    spiked[0] = 40.0
+    base, spike = check_fat_tails(r), check_fat_tails(spiked)
+    assert spike["excess_kurtosis"] > 50 * max(abs(base["excess_kurtosis"]), 0.1)
+    assert spike["max_sd"] > 30
+    assert abs(spike["trimmed_excess_kurtosis"] - base["trimmed_excess_kurtosis"]) < 0.1
+    assert abs(spike["q999_sd"] - base["q999_sd"]) < 0.2
+    assert base["q99_sd"] == pytest.approx(2.576, abs=0.1)  # Gaussian 99% two-sided
+
+
 def test_volatility_clustering_detected_in_windows():
     """GARCH windows show clustering; i.i.d. windows do not."""
     garch = windows_of(garch_returns(4000), 30)

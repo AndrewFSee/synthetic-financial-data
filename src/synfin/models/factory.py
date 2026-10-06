@@ -84,7 +84,10 @@ def model_kwargs_from_config(
             "num_layers": c.get("num_layers", 2),
             "rnn_type": c.get("rnn_type", "lstm"),
             "dropout": c.get("dropout", 0.1),
-            "recon_loss": c.get("reconstruction_loss", "mse"),
+            "recon_loss": c.get("reconstruction_loss", "gaussian"),
+            "ar_noise": c.get("ar_noise", True),
+            "noise": c.get("noise_distribution", "gaussian"),
+            "garch_noise": c.get("garch_noise", False),
             "copula_type": copula.get("type", "gaussian"),
             "copula_df": float(copula.get("df", 4.0)),
         }

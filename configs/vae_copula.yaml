@@ -10,10 +10,21 @@ model:
   num_layers: 2               # encoder and decoder RNN layers
   latent_dim: 32
   dropout: 0.1
-  reconstruction_loss: "mse"  # "mse" or "mae"
+  # "gaussian": decoder predicts mean + variance per step and generation samples
+  # from it (needed for return-like data); "mse"/"mae": legacy mean-only decoder.
+  reconstruction_loss: "gaussian"
+  ar_noise: true              # AR(1) observation noise with learned per-feature persistence
+  # Innovations: "student_t" (learned df per feature) gives realistic within-window
+  # fat tails; garch_noise adds GARCH(1,1) volatility feedback so extremes cluster
+  # instead of appearing as isolated spikes. On AAPL (3 seeds) this pair matched
+  # real tails best while keeping volatility clustering; "gaussian" has thin tails,
+  # and student_t without GARCH loses clustering. Known cost: occasional generated
+  # moves beyond the largest real one.
+  noise_distribution: "student_t"
+  garch_noise: true
 
-  # Latent copula, fitted to the encoder's posterior means after training and
-  # used for sampling instead of the N(0, I) prior.
+  # Latent copula, fitted to draws from the encoder's posteriors after training
+  # and used for sampling instead of the N(0, I) prior.
   copula:
     type: "gaussian"          # "gaussian" or "student_t"
     df: 4                     # degrees of freedom for the Student-t copula
