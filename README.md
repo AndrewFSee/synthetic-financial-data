@@ -322,6 +322,19 @@ Files are written to `data/structural_breaks/<preset>/`: `X_<split>.parquet` and
 
 **Calibration.** The presets were tuned against the public ADIA training sets. The no-break segments reproduce the real data's tail weight, autocorrelation spread, volatility clustering and outlier frequency. Five simple two-sample detectors score within about 0.035 AUC (offline) and 0.015 AUC (real-time) of their AUC on real data.
 
+**Validation with a real competition detector.** We ran a production-grade real-time detector (a streaming-feature + LightGBM ensemble from an ADIA real-time competition entry) through one harness with 400 training and 600 test series per run, scored by TS-AUC with bootstrap standard errors (~0.02):
+
+| Data the detector is trained and tested on | TS-AUC |
+|---|---|
+| Real ADIA training series (2 seeds) | 0.586, 0.576 (mean 0.581) |
+| synfin `adia_realtime` preset (2 seeds) | 0.556, 0.582 (mean 0.569) |
+| Toy generator (i.i.d. Gaussian, large breaks) | 0.947 |
+
+- **Synfin data is as hard as the real data**, within noise. A generator with unrealistic breaks makes detection look far easier than it is, so local cross-validation on it overstates a detector's quality badly.
+- **Trained on synfin, tested on real series:** the detector scores 0.598 and 0.547 (seeds 0 and 10), against 0.586 and 0.576 when trained on real series, so it transfers within noise.
+- **This transfer test can't distinguish generators at this size**, though: a detector trained on the toy data also scores 0.588 on real series, because the detector's features are hand-built and training only weights them.
+- **Per break type, only the broad pattern is reliable** (single types swing between seeds): variance breaks are the easiest to detect (0.62–0.65), and AR and tail breaks the hardest (0.47–0.55).
+
 ```python
 from synfin.structural_breaks import generate, get_preset, auc_report, ts_auc
 
