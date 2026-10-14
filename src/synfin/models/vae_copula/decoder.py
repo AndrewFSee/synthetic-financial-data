@@ -40,6 +40,13 @@ class Decoder(nn.Module):
     tails through changes in sigma, which leaves within-window tails too thin
     for daily returns.
 
+    With ``correlated_noise=True`` each step's independent innovations are
+    mixed by a learned lower-triangular matrix L with unit-norm rows, so the
+    innovations have correlation L L^T and unit variances. Without it the
+    features' noise is independent and same-day co-movement is lost: on AAPL
+    the correlation between the close-to-close return and the overnight gap
+    is +0.67 in real data but was ~0 in samples.
+
     With ``magnitude_driver`` set to the return feature's index, every other
     feature's innovation is coupled to the size of the return innovation::
 
@@ -75,6 +82,8 @@ class Decoder(nn.Module):
         ar_noise: Use AR(1) observation noise (requires heteroscedastic).
         noise: Innovation distribution, "gaussian" or "student_t" (requires
             heteroscedastic).
+        correlated_noise: Mix each step's independent innovations with a
+            learned correlation matrix (requires heteroscedastic).
         magnitude_driver: Index of the return feature. If set, every other
             feature's innovation is coupled to the size of the return
             innovation (see the class docstring); requires heteroscedastic.
@@ -104,8 +113,11 @@ class Decoder(nn.Module):
         noise: str = "gaussian",
         garch_noise: bool = False,
         magnitude_driver: Optional[int] = None,
+        correlated_noise: bool = False,
     ) -> None:
         super().__init__()
+        if correlated_noise and not heteroscedastic:
+            raise ValueError("correlated_noise requires heteroscedastic=True.")
         if magnitude_driver is not None and not heteroscedastic:
             raise ValueError("magnitude_driver requires heteroscedastic=True.")
         if magnitude_driver is not None and not 0 <= magnitude_driver < output_dim:
@@ -157,6 +169,13 @@ class Decoder(nn.Module):
         else:
             self.garch_raw = None
         # Magnitude coupling: c_f = MAX_ABS_COUPLING * tanh(raw_f), starting at 0.
+        # Cross-feature mixing: lower-triangular L with unit-norm rows (corr = L L^T),
+        # starting at the identity.
+        if correlated_noise:
+            self.mix_lower = nn.Parameter(torch.zeros(output_dim, output_dim))
+            self.mix_log_diag = nn.Parameter(torch.zeros(output_dim))
+        else:
+            self.mix_lower = self.mix_log_diag = None
         self.coupling_raw = (
             nn.Parameter(torch.zeros(output_dim)) if magnitude_driver is not None else None
         )
@@ -172,6 +191,18 @@ class Decoder(nn.Module):
         if self.noise_df_raw is None:
             return None
         return self.MIN_DF + torch.exp(self.noise_df_raw)
+
+    def noise_mixing(self) -> Optional[Tensor]:
+        """Lower-triangular mixing matrix L (unit-norm rows), or None if disabled."""
+        if self.mix_lower is None:
+            return None
+        v = torch.tril(self.mix_lower, diagonal=-1) + torch.diag(torch.exp(self.mix_log_diag))
+        return v / v.norm(dim=1, keepdim=True)
+
+    def noise_correlation(self) -> Optional[Tensor]:
+        """Correlation of the mixed innovations, L L^T (before magnitude coupling)."""
+        L = self.noise_mixing()
+        return None if L is None else L @ L.T
 
     def magnitude_coupling(self) -> Optional[Tensor]:
         """Per-feature coupling c_f to the return shock's magnitude (0 for the driver)."""
@@ -269,6 +300,11 @@ class Decoder(nn.Module):
             s = torch.sqrt(1.0 - coupling.pow(2))
             xi = (xi - coupling * h) / s
             nll = nll + torch.log(s)
+        L = self.noise_mixing()
+        if L is not None:
+            # xi = L eps: recover the independent eps; Jacobian log|det L| per step.
+            xi = torch.linalg.solve_triangular(L, xi.unsqueeze(-1), upper=False).squeeze(-1)
+            nll = nll + torch.log(torch.diagonal(L))
         return (nll + self._innovation_nll(xi)).mean()
 
     def sample(self, z: Tensor) -> Tensor:
@@ -281,6 +317,9 @@ class Decoder(nn.Module):
         else:
             t = torch.distributions.StudentT(df).sample(mean.shape[:-1])
             eps = t * torch.sqrt((df - 2.0) / df)
+        L = self.noise_mixing()
+        if L is not None:
+            eps = eps @ L.T
         coupling = self.magnitude_coupling()
         if coupling is not None:
             h = self._standardized_magnitude(eps[..., self.magnitude_driver])[..., None]

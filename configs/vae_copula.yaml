@@ -29,6 +29,16 @@ model:
   # in 2 of 3 seeds (z ~3), so AAPL realism is lower with coupling (0.787 vs 0.830).
   # On MSFT and JPM the coupled model scores higher overall. See README.
   magnitude_coupling: true
+  # Correlate the features' same-day noise (learned correlation matrix). Without it
+  # the noise is independent across features and same-day co-movement is lost:
+  # corr(return, overnight gap) is +0.67 in real AAPL data but was ~0.00 in samples,
+  # and a post-hoc LSTM told synthetic windows from real ones with AUC ~0.98. On
+  # AAPL (3 seeds) it gives return-gap corr +0.49, LSTM AUC 0.80 (real held-out
+  # windows score 0.84), validation NLL 0.273 -> 0.221, and stylized score
+  # 0.770 -> 0.803 (trimmed kurtosis 6.19 -> 4.45, real 4.68). LSTM AUC also falls
+  # on MSFT (0.97 -> 0.66) and JPM (0.97 -> 0.69), but tails and crash regimes thin
+  # there: JPM trimmed kurtosis 11.7 -> 5.6 (real 9.8). See README.
+  correlated_noise: true
 
   # Latent copula, fitted to draws from the encoder's posteriors after training;
   # used when generation.latent_sampler is "copula".

@@ -59,6 +59,9 @@ class VAECopula(nn.Module):
         noise: Innovation distribution of the Gaussian observation model's
             noise, "gaussian" or "student_t" (learned df per feature; gives
             fat tails within a window).
+        correlated_noise: Learn a correlation matrix for each step's noise
+            across features (same-day co-movement such as return vs overnight
+            gap). Gaussian observation model only.
         magnitude_driver: Index of the return feature; couples every other
             feature's noise to the size of the return shock (e.g. volume rises
             on big moves). Gaussian observation model only.
@@ -83,6 +86,7 @@ class VAECopula(nn.Module):
         noise: str = "gaussian",
         garch_noise: bool = False,
         magnitude_driver: Optional[int] = None,
+        correlated_noise: bool = False,
     ) -> None:
         super().__init__()
         if recon_loss not in ("gaussian", "mse", "mae"):
@@ -123,6 +127,7 @@ class VAECopula(nn.Module):
             noise=noise if recon_loss == "gaussian" else "gaussian",
             garch_noise=garch_noise and recon_loss == "gaussian",
             magnitude_driver=magnitude_driver if recon_loss == "gaussian" else None,
+            correlated_noise=correlated_noise and recon_loss == "gaussian",
         )
 
     def reparameterize(self, mu: Tensor, log_var: Tensor) -> Tensor:

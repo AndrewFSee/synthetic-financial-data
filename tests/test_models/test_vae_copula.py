@@ -354,6 +354,87 @@ def test_factory_wires_magnitude_coupling():
     assert model_kwargs_from_config("vae_copula", 3, 10, {}, names)["magnitude_driver"] is None
 
 
+def test_correlated_noise_nll_matches_multivariate_normal():
+    """Gaussian + mixing: each step is N(mean_t, D_t L L^T D_t) exactly."""
+    from scipy.stats import multivariate_normal
+
+    torch.manual_seed(5)
+    dec = Decoder(
+        latent_dim=3,
+        hidden_dim=8,
+        output_dim=3,
+        seq_length=4,
+        num_layers=1,
+        heteroscedastic=True,
+        correlated_noise=True,
+    )
+    with torch.no_grad():
+        dec.mix_lower.normal_()
+    z, x = torch.randn(2, 3), torch.randn(2, 4, 3)
+    with torch.no_grad():
+        total = dec.nll(x, z).item() * x.numel()
+        mean, log_var = dec.forward_dist(z)
+        C = dec.noise_correlation().numpy()
+    sd = np.exp(0.5 * log_var.numpy())
+    exact = 0.0
+    for b in range(2):
+        for t in range(4):
+            cov = np.outer(sd[b, t], sd[b, t]) * C
+            exact -= multivariate_normal(mean[b, t].numpy(), cov).logpdf(x[b, t].numpy())
+    assert total + 0.5 * np.log(2 * np.pi) * x.numel() == pytest.approx(exact, rel=1e-5)
+
+
+def test_correlated_noise_learns_same_day_correlation():
+    """f1 = 0.7 f0 + noise (corr 0.7), f2 independent."""
+    rng = np.random.default_rng(0)
+    n, t = 512, 20
+    f0 = rng.standard_normal((n, t))
+    f1 = 0.7 * f0 + np.sqrt(1 - 0.49) * rng.standard_normal((n, t))
+    data = np.stack([f0, f1, rng.standard_normal((n, t))], axis=-1)
+    loader = torch.utils.data.DataLoader(
+        torch.tensor(data, dtype=torch.float32), batch_size=64, shuffle=True
+    )
+    torch.manual_seed(0)
+    vae = VAECopula(
+        input_dim=3,
+        hidden_dim=16,
+        latent_dim=2,
+        seq_length=t,
+        num_layers=1,
+        correlated_noise=True,
+    )
+    vae.training_step(loader, torch.optim.Adam(vae.parameters(), lr=1e-2), epochs=30)
+    C = vae.decoder.noise_correlation().detach().numpy()
+    assert C[1, 0] > 0.55 and abs(C[2, 0]) < 0.15 and abs(C[2, 1]) < 0.15
+    vae.fit_latent_sampler(loader)
+    s = vae.generate(512).numpy().reshape(-1, 3)
+    assert np.corrcoef(s.T)[0, 1] > 0.5
+
+
+def test_mixing_and_coupling_keep_unit_variance():
+    """With mixing + magnitude coupling, standardized noise keeps variance 1 per feature."""
+    torch.manual_seed(6)
+    dec = Decoder(
+        latent_dim=2,
+        hidden_dim=8,
+        output_dim=3,
+        seq_length=50,
+        num_layers=1,
+        heteroscedastic=True,
+        noise="student_t",
+        correlated_noise=True,
+        magnitude_driver=0,
+    )
+    with torch.no_grad():
+        dec.mix_lower.normal_()
+        dec.coupling_raw.fill_(1.0)
+        z = torch.randn(1, 2).expand(4000, 2)
+        mean, log_var = dec.forward_dist(z)
+        u = (dec.sample(z) - mean) * torch.exp(-0.5 * log_var)
+    var = u.reshape(-1, 3).var(dim=0).numpy()
+    np.testing.assert_allclose(var, 1.0, atol=0.06)
+
+
 def test_noise_option_validation():
     with pytest.raises(ValueError):
         Decoder(latent_dim=2, output_dim=3, noise="laplace", heteroscedastic=True)

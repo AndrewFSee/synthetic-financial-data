@@ -38,6 +38,14 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--output", default=None, help="Default: evaluation.output_dir")
     parser.add_argument("--feature-names", nargs="+", default=None, help="For .npy inputs")
     parser.add_argument("--no-tstr", action="store_true", help="Skip TSTR benchmark")
+    parser.add_argument(
+        "--rnn-metrics",
+        action="store_true",
+        help="Also run the TimeGAN paper's post-hoc LSTM discriminative/predictive scores",
+    )
+    parser.add_argument(
+        "--plot-projections", default=None, help="Save PCA/t-SNE projection plot to this path"
+    )
     parser.add_argument("--log-level", default="INFO")
     return parser.parse_args(argv)
 
@@ -92,7 +100,12 @@ def main(argv=None) -> None:
         ks_alpha=eval_cfg.get("ks_alpha", 0.05),
         mmd_bandwidth=eval_cfg.get("mmd_bandwidth"),
         tstr_task=eval_cfg.get("tstr_task", "volatility"),
+        rnn_metrics=args.rnn_metrics,
     )
+    if args.plot_projections:
+        from synfin.visualization.projections import plot_projections
+
+        plot_projections(real, synthetic, savepath=args.plot_projections)
 
     print("\n" + "=" * 60)
     print("  EVALUATION REPORT")
@@ -154,6 +167,19 @@ def main(argv=None) -> None:
             f"    leverage corr        {r['leverage_effect']['mean_leverage_corr']:7.3f}  "
             f"{s['leverage_effect']['mean_leverage_corr']:7.3f}"
         )
+    if "posthoc_rnn" in report:
+        d = report["posthoc_rnn"]["discriminative"]
+        print("  Post-hoc LSTM (TimeGAN paper suite):")
+        print(
+            f"    discriminator accuracy {d['accuracy']:.3f} (0.5 = indistinguishable), "
+            f"AUC {d['auc']:.3f}"
+        )
+        if "predictive" in report["posthoc_rnn"]:
+            pr = report["posthoc_rnn"]["predictive"]
+            print(
+                f"    next-step MAE: TSTR {pr['mae_tstr']:.4f}, TRTR {pr['mae_trtr']:.4f}, "
+                f"ratio {pr['ratio']:.3f} (1 = as good as real)"
+            )
     print("=" * 60)
 
 
