@@ -18,6 +18,7 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from synfin.evaluation.discriminative import discriminative_score
+from synfin.evaluation.posthoc_rnn import posthoc_rnn_suite
 from synfin.evaluation.privacy import (
     collapse_diagnostics,
     membership_inference_risk,
@@ -59,6 +60,7 @@ def compute_all_metrics(
     mmd_bandwidth: Optional[float] = None,
     tstr_task: str = "volatility",
     seed: int = 0,
+    rnn_metrics: bool = False,
 ) -> Dict:
     """Compute and aggregate all evaluation metrics.
 
@@ -76,6 +78,9 @@ def compute_all_metrics(
         mmd_bandwidth: RBF bandwidth for MMD (None = median heuristic).
         tstr_task: "volatility" or "direction".
         seed: Seed for subsampling.
+        rnn_metrics: Also run the TimeGAN paper's post-hoc LSTM discriminative
+            and predictive scores (slower; reported under ``posthoc_rnn``,
+            not part of the realism score).
 
     Returns:
         Nested dictionary with all evaluation results and an overall score.
@@ -169,6 +174,10 @@ def compute_all_metrics(
         report["tstr"] = tstr_benchmark(
             real, synthetic, return_idx=ret_idx, task=tstr_task, real_test=real_holdout
         )
+
+    if rnn_metrics:
+        logger.info("Running post-hoc LSTM metrics (TimeGAN paper suite)...")
+        report["posthoc_rnn"] = posthoc_rnn_suite(real, synthetic, real_holdout, seed=seed)
 
     report["realism_components"] = _realism_components(report)
     comps = report["realism_components"]

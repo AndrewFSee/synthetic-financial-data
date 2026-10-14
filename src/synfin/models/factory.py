@@ -92,6 +92,7 @@ def model_kwargs_from_config(
             "ar_noise": c.get("ar_noise", True),
             "noise": c.get("noise_distribution", "gaussian"),
             "garch_noise": c.get("garch_noise", False),
+            "correlated_noise": c.get("correlated_noise", False),
             "magnitude_driver": (
                 list(feature_names).index("LogReturn")
                 if c.get("magnitude_coupling", False)

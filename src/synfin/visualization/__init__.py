@@ -3,6 +3,7 @@
 from synfin.visualization.candlestick import plot_candlestick
 from synfin.visualization.correlations import plot_correlation_heatmap
 from synfin.visualization.distributions import plot_distributions
+from synfin.visualization.projections import compute_projections, plot_projections
 from synfin.visualization.time_series import plot_time_series
 
 __all__ = [
@@ -10,4 +11,6 @@ __all__ = [
     "plot_distributions",
     "plot_correlation_heatmap",
     "plot_time_series",
+    "compute_projections",
+    "plot_projections",
 ]
