@@ -39,6 +39,14 @@ model:
   # on MSFT (0.97 -> 0.66) and JPM (0.97 -> 0.69), but tails and crash regimes thin
   # there: JPM trimmed kurtosis 11.7 -> 5.6 (real 9.8). See README.
   correlated_noise: true
+  # Condition the decoder on each window's volatility regime (log realized return
+  # volatility); generation reuses the regime of the training window it samples.
+  # With correlated noise alone the latent under-encodes the regime and crash
+  # windows are written off as day-level outliers, which thins tails (JPM trimmed
+  # kurtosis 5.6, real 9.8). With it (and noise_calibration_steps below): JPM 9.2,
+  # MSFT 5.4 (real 5.45), AAPL 4.8 (real 4.7). The likelihood is then conditional
+  # on the regime. The checkpoint stores one regime value per training window.
+  regime_conditioning: true
 
   # Latent copula, fitted to draws from the encoder's posteriors after training;
   # used when generation.latent_sampler is "copula".
@@ -59,6 +67,12 @@ training:
   kl_weight: 1.0              # beta (1.0 = standard VAE)
   kl_annealing: true          # ramp beta from 0 to kl_weight
   kl_annealing_epochs: 50
+  # After training, fit the cross-feature noise parameters (noise mixing and
+  # magnitude couplings) to convergence with the network frozen. Early stopping
+  # leaves them short of their optimum: on AAPL the volume coupling stopped at
+  # ~0.35-0.45 while the residuals support ~0.56, so the same-day volume-volatility
+  # link was too weak (0.35 vs 0.46 real; 0.46 after). 0 disables.
+  noise_calibration_steps: 300
 
 generation:
   num_samples: 1000

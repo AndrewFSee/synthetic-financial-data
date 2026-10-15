@@ -15,7 +15,7 @@ It implements **four architectures** you can train and compare:
 
 | Model | Description | Status | Reference |
 |-------|-------------|--------|-----------|
-| **VAE + Copula** | Recurrent VAE; Student-t + GARCH noise, correlated across features, with volume–volatility coupling | **Recommended default** | Kingma & Welling 2014 |
+| **VAE + Copula** | Recurrent VAE conditioned on the volatility regime; Student-t + GARCH noise, correlated across features, with volume–volatility coupling | **Recommended default** | Kingma & Welling 2014 |
 | **Diffusion-TS** | Transformer diffusion with trend/seasonal decomposition | Best stylized facts after the VAE; fails TSTR; slow to train | Yuan & Qiao, ICLR 2024 |
 | **Diffusion (DDPM)** | 1D U-Net denoising diffusion, v-prediction | Realistic single windows; weak clustering; fails TSTR | Ho et al., NeurIPS 2020 |
 | **TimeGAN** | Recurrent GAN with temporal supervision | Baseline only (see below) | Yoon et al., NeurIPS 2019 |
@@ -27,27 +27,29 @@ Same chronological split and evaluation for every model (see [Evaluation Methodo
 | | VAE + Copula | Diffusion-TS | DDPM | TimeGAN |
 |---|---|---|---|---|
 | Training | 60 epochs, mean of 3 seeds | 150 epochs, batch 32, 1 run | 150 epochs, 1 run | 60 epochs per phase, 1 run |
-| Realism score (6 components) | **0.797** | 0.729 | 0.750 | 0.456 |
-| Discriminative score (1 = indistinguishable) | 0.675 | 0.719 | **1.000** | 0.000 |
-| Stylized-facts score | **0.803** | 0.751 | 0.611 | 0.196 |
-| Tails: trimmed kurtosis (real 4.68) | **4.45** | 3.34 | 3.07 | 7.16 |
-| Volatility clustering, \|r\| ACF (real 0.208) | **0.205** | 0.192 | 0.086 | 0.552 |
-| Same-day corr(volume, \|r\|) (real 0.46) | 0.40 | 0.53 | — | — |
+| Realism score (6 components) | **0.800** | 0.729 | 0.750 | 0.456 |
+| Discriminative score (1 = indistinguishable) | 0.649 | 0.719 | **1.000** | 0.000 |
+| Stylized-facts score | **0.895** | 0.751 | 0.611 | 0.196 |
+| Tails: trimmed kurtosis (real 4.68) | **4.82** | 3.34 | 3.07 | 7.16 |
+| Volatility clustering, \|r\| ACF (real 0.208) | **0.196** | 0.192 | 0.086 | 0.552 |
+| Same-day corr(volume, \|r\|) (real 0.46) | **0.46** | 0.53 | — | — |
 | Same-day corr(return, overnight gap) (real 0.67) | 0.50 | **0.68** | **0.68** | 0.85 |
-| Largest stylized gap (z) | volume–volatility −2.1 | volume–volatility +2.6 | clustering −2.2 | regimes +12 |
-| TSTR gap (z; real baseline AUC 0.578) | +2.2 | +4.3 | +5.1 | +4.8 |
-| Post-hoc LSTM discriminator AUC (0.5 = indistinguishable) | 0.80 | **0.52** | 0.54 | 1.00 |
+| Largest stylized gap (z) | extreme clustering −0.8 | volume–volatility +2.6 | clustering −2.2 | regimes +12 |
+| TSTR gap (z; real baseline AUC 0.578) | +2.6 | +4.3 | +5.1 | +4.8 |
+| Post-hoc LSTM discriminator AUC (0.5 = indistinguishable) | 0.78 | **0.52** | 0.54 | 1.00 |
 | Privacy verdict | ok | ok | ok | collapse |
 
-**Read the headline score with its components.** Both diffusion models fail TSTR outright (gap > 4 standard errors): a volatility classifier trained on their data is no better than chance on real data, even though DDPM's individual windows are indistinguishable from real ones (discriminative 1.000). The VAE has the best realism and stylized-facts scores, with real-like tails and clustering, crash-level regimes and a realistic volume–volatility link (z = −12 before magnitude coupling, −2.1 after; the learned couplings of about +0.43 for volume and −0.10 for the ranges track the real same-day correlations).
+**Read the headline score with its components.** Both diffusion models fail TSTR outright (gap > 4 standard errors): a volatility classifier trained on their data is no better than chance on real data, even though DDPM's individual windows are indistinguishable from real ones (discriminative 1.000). The VAE has the best realism and stylized-facts scores: every stylized fact is within one standard error of real (the largest gap is extreme clustering, z = −0.8), including the tails, clustering, crash-level regimes and the volume–volatility link (z = −12 before magnitude coupling, +0.03 now; the learned couplings of about +0.5 for volume and −0.07 for the ranges track the real same-day correlations). Its TSTR gap swings with the seed (z = 1.7 / 4.8 / 1.4).
 
 **Magnitude coupling is a trade-off on AAPL** (measured before correlated noise was added). Without it, the VAE's TSTR gaps are within noise (z = 0.6 / 1.9 / 0.9 over 3 seeds) and its realism score is higher (0.830 vs 0.787). With it, two of three seeds have significant TSTR gaps (z = 1.1 / 3.2 / 2.8). On MSFT and JPM the coupled model scores higher on every summary score. The AAPL TSTR cost isn't explained by lagged volume effects: coupling brings the lagged volume–volatility correlations *closer* to real. Coupling also clearly improves held-out likelihood (validation NLL 0.303 → 0.273). Set `magnitude_coupling: false` to trade the volume link back for AAPL-style TSTR.
 
 For reference, real AAPL data from a later, calmer period scores 0.594 against the training period. Its stylized-facts score is 0.483 (thinner tails, less clustering), and it fails TSTR (z = 4.5), partly because of the regime change and partly because it has only ~375 windows to train a classifier on, against 1,000 for the generators.
 
-**Correlated noise fixed the VAE's main giveaway.** The paper-style post-hoc LSTM discriminator (see [Evaluation Methodology](#post-hoc-lstm-suite-timegan-paper)) separated the earlier VAE from real data almost perfectly (AUC 0.96–0.99), although no single feature gave it away: trained on one feature at a time it scored about 0.5. The tell was same-day co-movement. The VAE drew each feature's noise independently, so the close-to-close return and the overnight gap were uncorrelated (−0.01 vs +0.67 in real data). With a learned correlation matrix for each day's noise (`correlated_noise: true`, now the default), the return–gap correlation is +0.50, the LSTM's AUC falls to 0.80 (6 runs: 3 seeds × 2 discriminator seeds), held-out NLL improves from 0.273 to 0.221, the stylized-facts score rises from 0.770 to 0.803, and the realism score from 0.787 to 0.797. For scale, the same LSTM separates the training period from *real* AAPL data of a later period with AUC 0.84. The diffusion models still fool it more often (≈0.5) but fail TSTR and, in DDPM's case, clustering. Two same-day correlations are still too weak: return–high range (−0.09 vs −0.25) and gap–high range (−0.04 vs −0.32). The cost is thinner tails and fewer crash-level windows, which helps on AAPL but undershoots on JPM (see the next table).
+**Correlated noise fixed the VAE's main giveaway.** The paper-style post-hoc LSTM discriminator (see [Evaluation Methodology](#post-hoc-lstm-suite-timegan-paper)) separated the earlier VAE from real data almost perfectly (AUC 0.96–0.99), although no single feature gave it away: trained on one feature at a time it scored about 0.5. The tell was same-day co-movement. The VAE drew each feature's noise independently, so the close-to-close return and the overnight gap were uncorrelated (−0.01 vs +0.67 in real data). With a learned correlation matrix for each day's noise (`correlated_noise: true`, now the default), the return–gap correlation is +0.50, the LSTM's AUC falls to 0.80 (6 runs: 3 seeds × 2 discriminator seeds), held-out NLL improves from 0.273 to 0.221, the stylized-facts score rises from 0.770 to 0.803, and the realism score from 0.787 to 0.797. For scale, the same LSTM separates the training period from *real* AAPL data of a later period with AUC 0.84. The diffusion models still fool it more often (≈0.5) but fail TSTR and, in DDPM's case, clustering. Two same-day correlations are still too weak: return–high range (−0.09 vs −0.25) and gap–high range (−0.04 vs −0.32). On its own, correlated noise also thinned the tails and weakened the volume link; the next paragraph covers the fix.
 
-The VAE column uses the default `posterior` latent sampler. With it, crash-level windows (≥3× median volatility) appear at 1.3% of windows vs 1.8% in the real data; the `copula` sampler smooths these regimes away (1.1% on an earlier version of the model).
+**Regime conditioning and noise calibration restored the tails and the volume link.** With correlated noise, the model wrote crash windows off as runs of one-day outliers instead of sustained high-volatility periods: in the most volatile 3% of real windows its standardized residuals had standard deviation 1.17, not 1. Its noise can't regenerate such windows, so the tails thinned (JPM trimmed kurtosis 5.6 vs 9.8 real). Lowering the KL weight, training longer and sampling latents closer to the posterior mean didn't fix it, so the decoder is now conditioned on each window's volatility regime (`regime_conditioning: true`, the log realized volatility of the return). Generation reuses the regime of the training window it samples, so calm and crash-level windows appear at their real frequency. Separately, early stopping left the cross-feature noise parameters short of their optimum: the volume coupling stopped at about 0.35–0.45, while the model's own residuals support about 0.56. After training, `noise_calibration_steps` fits just those parameters (noise mixing and couplings) with the network frozen. Together, on AAPL (3 seeds): the stylized-facts score rises from 0.803 to 0.895, the volume–volatility link from 0.40 to 0.46 (real 0.46), trimmed kurtosis is 4.82 (real 4.68), and the LSTM's AUC falls from 0.80 to 0.78. The likelihood is now conditional on the regime, so held-out NLL isn't comparable with earlier versions.
+
+The VAE column uses the default `posterior` latent sampler. With it, crash-level windows (≥3× median volatility) appear at 1.2% of windows vs 1.8% in the real data; the `copula` sampler smooths these regimes away (1.1% on an earlier version of the model).
 
 **PCA and t-SNE projections** (the TimeGAN paper's visual check, one point per window averaged over time). Synthetic windows from the VAE and Diffusion-TS cover the same region as the real ones, with no collapse. Both cover the sparse high-volatility tail of the real data (right side of the PCA plots) only thinly. TimeGAN shows the failure these plots are meant to catch: a dense collapsed cluster plus a spray of off-distribution windows.
 
@@ -55,21 +57,21 @@ The VAE column uses the default `posterior` latent sampler. With it, crash-level
 
 These plots are a sanity check, not proof: averaging over time hides temporal structure, so a generator can overlap perfectly here and still miss clustering. The scores above are the quantitative test.
 
-**Other tickers** (1 run each, 60 epochs). "Gaussian" is the original model (Gaussian AR noise, copula sampling); "independent" adds Student-t + GARCH noise with magnitude coupling and posterior sampling; "default" also correlates the features' same-day noise:
+**Other tickers** (1 run each, 60 epochs). "Independent" is Student-t + GARCH noise with magnitude coupling and posterior sampling; "correlated" adds correlated same-day noise; "default" adds regime conditioning and noise calibration. (The original Gaussian model scored 0.868 on MSFT and 0.788 on JPM.)
 
-| | MSFT Gaussian | MSFT independent | MSFT default | JPM Gaussian | JPM independent | JPM default |
+| | MSFT independent | MSFT correlated | MSFT default | JPM independent | JPM correlated | JPM default |
 |---|---|---|---|---|---|---|
-| Realism score (6 components) | 0.868 | **0.905** | 0.885 | 0.788 | 0.839 | **0.881** |
-| Discriminative | 0.783 | **0.838** | 0.789 | 0.714 | 0.720 | **0.782** |
-| Stylized-facts score | 0.653 | **0.839** | 0.764 | 0.544 | **0.792** | 0.716 |
-| Post-hoc LSTM AUC (real later period: MSFT 0.84, JPM 0.70) | — | 0.97 | **0.66** | — | 0.97 | **0.69** |
-| Same-day corr(return, gap) (real: MSFT 0.67, JPM 0.73) | — | 0.00 | **0.47** | — | 0.01 | **0.55** |
-| Same-day corr(volume, \|r\|) (real: MSFT 0.43, JPM 0.48) | 0.11 | **0.38** | **0.38** | 0.06 | 0.38 | **0.40** |
-| Trimmed kurtosis (real: MSFT 5.45, JPM 9.78) | 3.26 | 7.25 | **4.34** | 2.34 | **11.66** | 5.57 |
-| Extreme clustering (real: MSFT 0.52, JPM 0.74) | 0.46 | **0.54** | 0.45 | 0.41 | **0.66** | 0.52 |
-| Window vol p99, × median (real: MSFT 4.47, JPM 5.48) | 2.57 | **3.95** | 3.27 | 2.73 | **5.57** | 3.71 |
+| Realism score (6 components) | **0.905** | 0.885 | 0.833 | 0.839 | 0.881 | **0.893** |
+| Discriminative | **0.838** | 0.789 | 0.772 | 0.720 | 0.782 | **0.807** |
+| Stylized-facts score | 0.839 | 0.764 | **0.925** | 0.792 | 0.716 | **0.834** |
+| Post-hoc LSTM AUC (real later period: MSFT 0.84, JPM 0.70) | 0.97 | 0.66 | **0.60** | 0.97 | 0.69 | **0.63** |
+| Same-day corr(return, gap) (real: MSFT 0.67, JPM 0.73) | 0.00 | 0.47 | **0.49** | 0.01 | **0.55** | **0.55** |
+| Same-day corr(volume, \|r\|) (real: MSFT 0.43, JPM 0.48) | 0.38 | 0.38 | **0.42** | 0.38 | 0.40 | **0.45** |
+| Trimmed kurtosis (real: MSFT 5.45, JPM 9.78) | 7.25 | 4.34 | **5.39** | 11.66 | 5.57 | **9.22** |
+| Extreme clustering (real: MSFT 0.52, JPM 0.74) | **0.54** | 0.45 | **0.50** | **0.66** | 0.52 | 0.56 |
+| Window vol p99, × median (real: MSFT 4.47, JPM 5.48) | **3.95** | 3.27 | 3.63 | **5.57** | 3.71 | 4.60 |
 
-Both newer models beat the Gaussian one on every summary score, and their TSTR gaps are within noise on MSFT and JPM. Correlated noise makes the post-hoc LSTM's job much harder on every ticker, but it thins the tails and crash regimes. Its tail, clustering and regime gaps all point the same way (real above synthetic), although each one is individually within sampling noise (|z| ≤ 1.7). On AAPL, where the independent model overshot the tails, this is an improvement; on JPM it undershoots: trimmed kurtosis 5.6 vs 9.8, and the 99th-percentile window volatility 3.7× vs 5.5× the median. The return noise's learned tail and GARCH parameters barely change, so the loss comes from less volatility variation *between* windows. Recovering it is an open item. The one gap beyond 2 standard errors is JPM's volume–volatility correlation (z = −3.2, and −3.6 without correlated noise).
+The default has the best stylized-facts score on both tickers, and it brings the tails and the volume link close to real while making the LSTM's job harder still. Every stylized gap is within 2 standard errors; the largest is JPM's volume–volatility correlation (z = −1.8, against −3.6 for the independent model). The very top of the volatility distribution is still a little short: 99th-percentile window volatility 4.6× vs 5.5× the median on JPM. With overlapping windows that statistic rests on one or two crash episodes, so it is noisy. MSFT's lower realism score is all TSTR, and in the unusual direction: a classifier trained on its synthetic data beats one trained on real data (z = −2.3), and the score penalizes |z| either way.
 
 **Why TimeGAN is only a baseline:** on return data its recovery network produces smooth paths (lag-1 autocorrelation wrong in every channel), it partially mode-collapses, and it exaggerates the leverage effect about tenfold (−0.74 vs −0.065). A fair rescue would need roughly the paper's ~10,000 joint iterations (~750 epochs here). Its original benchmark used smooth price levels, not near-white-noise returns. It is kept, tested and documented as a reference point, but it isn't the default.
 
@@ -105,13 +107,15 @@ Sampling:   x_T ~ N(0,I) ──→[denoise T steps]──→ x_0
 
 ```
 Encoder:  X ──→[LSTM]──→ (μ, σ²)  ──→[reparameterize]──→ z
-Decoder:  z ──→[LSTM]──→ (mean_t, σ_t) ──→ X̂ = mean + σ·u,  u_t = ρ·u_{t-1} + √(1−ρ²)·ε_t
+Regime:   r = log realized volatility of the window's returns
+Decoder:  (z, r) ──→[LSTM]──→ (mean_t, σ_t) ──→ X̂ = mean + σ·u,  u_t = ρ·u_{t-1} + √(1−ρ²)·ε_t
           ε_t: Student-t (learned df), mixed across features by a learned correlation
           matrix (same-day co-movement), with GARCH(1,1) volatility feedback and every
           feature's shock coupled to the size of the return shock (big moves, high volume);
           ρ, df, GARCH α/β and the couplings are learned per feature; the likelihood is exact
-Latents:  store each training window's posterior N(μ_i, σ_i²)  (after training; also fits a copula)
-Generate: pick i at random, z ~ N(μ_i, σ_i²) ──→ Decoder ──→ X_synthetic
+          (given r); after training, the mixing and couplings are refit with the network frozen
+Latents:  store each training window's posterior N(μ_i, σ_i²) and regime r_i  (also fits a copula)
+Generate: pick i at random, z ~ N(μ_i, σ_i²), r = r_i ──→ Decoder ──→ X_synthetic
           (default "posterior" sampler: reproduces rare regimes such as crash-level volatility
            at their real frequency; "copula" and "prior" samplers also available)
 ```
@@ -301,7 +305,7 @@ A generator that collapses toward the dense centre of the data produces samples 
 - **Verdict**: `memorization` if the rate is above twice the expected rate, otherwise `collapse` if collapse is flagged, otherwise `ok`.
 - **NNDR** (median nearest-record distance, synthetic vs holdout) is still reported for reference.
 
-These checks cover the *generated data*. The checkpoint is a separate matter: with the default `posterior` latent sampler, a VAE checkpoint stores every training window's encoder posterior (a lossy encoding of the training data), so treat it as derived from the training data when sharing it. Use `latent_sampler: copula` if that matters.
+These checks cover the *generated data*. The checkpoint is a separate matter: with the default `posterior` latent sampler, a VAE checkpoint stores every training window's encoder posterior and volatility regime (a lossy encoding of the training data), so treat it as derived from the training data when sharing it. Use `latent_sampler: copula` if that matters.
 
 ### Discriminative Score
 A gradient-boosted classifier tries to tell real windows from synthetic ones using per-window dynamics features: volatility level, tail weight, autocorrelation of |x|, and leverage. It's scored with cross-validated ROC AUC on contiguous-block folds, so overlapping real windows can't leak between folds. KS and MMD are nearly blind to temporal structure, so this is the component that catches i.i.d. noise with the right mean and variance.

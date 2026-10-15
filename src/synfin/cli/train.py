@@ -221,6 +221,9 @@ def _train_vae(model, train_loader, val_loader, cfg, device, log_dir):
         loss_fn=vae_loss_fn,
         log_interval=cfg.get("log_interval", 10),
     )
+    model.calibrate_cross_feature_noise(
+        train_loader, steps=cfg.get("noise_calibration_steps", 0), device=device
+    )
     model.fit_latent_sampler(train_loader, device=device)
     return history
 

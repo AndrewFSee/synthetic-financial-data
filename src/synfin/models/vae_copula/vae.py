@@ -62,6 +62,16 @@ class VAECopula(nn.Module):
         correlated_noise: Learn a correlation matrix for each step's noise
             across features (same-day co-movement such as return vs overnight
             gap). Gaussian observation model only.
+        regime_driver: Index of the return feature. If set, the decoder is
+            conditioned on each window's volatility regime, r = log of the
+            realized volatility of that feature over the window, alongside z.
+            Generation reuses r from the training windows (with the posterior
+            sampler, from the same window as z), so calm and crash-level
+            windows appear at their real frequency. Without it the latent
+            under-encodes the regime and the decoder shrinks it toward the
+            middle, which thins tails (JPM: 99th-percentile window volatility
+            3.7x the median vs 5.5x real). The likelihood is then conditional
+            on r. Gaussian observation model only.
         magnitude_driver: Index of the return feature; couples every other
             feature's noise to the size of the return shock (e.g. volume rises
             on big moves). Gaussian observation model only.
@@ -87,24 +97,31 @@ class VAECopula(nn.Module):
         garch_noise: bool = False,
         magnitude_driver: Optional[int] = None,
         correlated_noise: bool = False,
+        regime_driver: Optional[int] = None,
     ) -> None:
         super().__init__()
         if recon_loss not in ("gaussian", "mse", "mae"):
             raise ValueError(f"Unknown recon_loss {recon_loss!r}; use 'gaussian', 'mse' or 'mae'.")
-        get_copula(copula_type, latent_dim, df=copula_df)  # validates copula_type
+        if regime_driver is not None and not 0 <= regime_driver < input_dim:
+            raise ValueError(f"regime_driver {regime_driver} out of range.")
+        self.regime_driver = regime_driver if recon_loss == "gaussian" else None
+        # The copula models z and, with regime conditioning, r jointly.
+        sample_dim = latent_dim + (self.regime_driver is not None)
+        get_copula(copula_type, sample_dim, df=copula_df)  # validates copula_type
         self.latent_dim = latent_dim
         self.kl_weight = kl_weight
         self.recon_loss = recon_loss
         self.copula_type = copula_type
         self.copula_df = copula_df
         self.register_buffer("copula_fitted", torch.tensor(False))
-        self.register_buffer("copula_corr", torch.eye(latent_dim))
-        self.register_buffer("copula_mean", torch.zeros(latent_dim))
-        self.register_buffer("copula_std", torch.ones(latent_dim))
+        self.register_buffer("copula_corr", torch.eye(sample_dim))
+        self.register_buffer("copula_mean", torch.zeros(sample_dim))
+        self.register_buffer("copula_std", torch.ones(sample_dim))
         # Encoder posteriors of the training windows, for "posterior" latent sampling.
         # Sized by fit_latent_sampler(); resized on checkpoint load.
         self.register_buffer("posterior_mu", torch.empty(0, latent_dim))
         self.register_buffer("posterior_log_var", torch.empty(0, latent_dim))
+        self.register_buffer("posterior_regime", torch.empty(0))
 
         self.encoder = Encoder(
             input_dim=input_dim,
@@ -115,7 +132,7 @@ class VAECopula(nn.Module):
             dropout=dropout,
         )
         self.decoder = Decoder(
-            latent_dim=latent_dim,
+            latent_dim=sample_dim,
             hidden_dim=hidden_dim,
             output_dim=input_dim,
             seq_length=seq_length,
@@ -146,6 +163,16 @@ class VAECopula(nn.Module):
             return mu + eps * std
         return mu
 
+    def window_regime(self, x: Tensor) -> Tensor:
+        """Volatility regime per window: log realized volatility of the driver, shape (batch,)."""
+        return torch.log(x[..., self.regime_driver].std(dim=1, unbiased=False) + 1e-6)
+
+    def _condition(self, z: Tensor, regime: Optional[Tensor]) -> Tensor:
+        """Decoder input: z, plus the regime when conditioning is on."""
+        if self.regime_driver is None:
+            return z
+        return torch.cat([z, regime[:, None].to(z)], dim=1)
+
     def forward(self, x: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
         """Forward pass through the VAE.
 
@@ -157,7 +184,8 @@ class VAECopula(nn.Module):
         """
         mu, log_var = self.encoder(x)
         z = self.reparameterize(mu, log_var)
-        x_recon = self.decoder(z)
+        regime = self.window_regime(x) if self.regime_driver is not None else None
+        x_recon = self.decoder(self._condition(z, regime))
         return x_recon, mu, log_var
 
     def elbo_loss(
@@ -217,7 +245,8 @@ class VAECopula(nn.Module):
         beta = kl_weight if kl_weight is not None else self.kl_weight
         mu, log_var = self.encoder(x)
         z = self.reparameterize(mu, log_var)
-        recon = self.decoder.nll(x, z)
+        regime = self.window_regime(x) if self.regime_driver is not None else None
+        recon = self.decoder.nll(x, self._condition(z, regime))
         elements = x.shape[1] * x.shape[2]
         kl = (-0.5 * (1 + log_var - mu.pow(2) - log_var.exp()).sum(dim=1)).mean() / elements
         return recon + beta * kl, recon, kl
@@ -289,7 +318,7 @@ class VAECopula(nn.Module):
     ):
         # The stored posteriors are sized by the training set, so adopt the
         # checkpoint's shape before the default (shape-checking) load.
-        names = ("posterior_mu", "posterior_log_var")
+        names = ("posterior_mu", "posterior_log_var", "posterior_regime")
         for name in names:
             key = prefix + name
             if key in state_dict:
@@ -302,6 +331,63 @@ class VAECopula(nn.Module):
         for name in names:
             if prefix + name in missing_keys:
                 missing_keys.remove(prefix + name)
+
+    def calibrate_cross_feature_noise(
+        self,
+        dataloader: DataLoader,
+        steps: int = 300,
+        lr: float = 1e-2,
+        device: torch.device = torch.device("cpu"),
+    ) -> Optional[float]:
+        """Fit the cross-feature noise parameters to convergence, network frozen.
+
+        The noise mixing (``correlated_noise``) and magnitude couplings are a
+        handful of scalars that start neutral (identity, 0) and are still far
+        from their optimum when early stopping ends joint training: on AAPL the
+        volume coupling stops at ~0.35-0.45, while the model's own residuals
+        give ~0.56, so the same-day volume-volatility link comes out too weak
+        (0.35 vs 0.46 real). This runs full-batch Adam on the training NLL over
+        just those parameters, with fresh posterior samples each step as in
+        training and generation. Per-feature noise parameters (AR, tails,
+        GARCH) are left alone: refit with the network frozen, GARCH collapses.
+
+        Args:
+            dataloader: DataLoader with (training) sequences.
+            steps: Optimizer steps.
+            lr: Adam learning rate.
+            device: Compute device.
+
+        Returns:
+            Final training NLL, or None if the model has no such parameters.
+        """
+        names = ("mix_lower", "mix_log_diag", "coupling_raw")
+        params = [p for n, p in self.decoder.named_parameters() if n in names]
+        if not params or steps <= 0:
+            return None
+        self.eval()
+        batches = [b[0] if isinstance(b, (list, tuple)) else b for b in dataloader]
+        x = torch.cat(batches).to(device)
+        with torch.no_grad():
+            mu, log_var = self.encoder(x)
+            regime = self.window_regime(x) if self.regime_driver is not None else None
+        trainable = {p: p.requires_grad for p in self.parameters()}
+        for p in self.parameters():
+            p.requires_grad_(False)
+        for p in params:
+            p.requires_grad_(True)
+        optimizer = torch.optim.Adam(params, lr=lr)
+        try:
+            for _ in range(steps):
+                z = mu + torch.exp(0.5 * log_var) * torch.randn_like(mu)
+                optimizer.zero_grad()
+                loss = self.decoder.nll(x, self._condition(z, regime))
+                loss.backward()
+                optimizer.step()
+        finally:
+            for p, flag in trainable.items():
+                p.requires_grad_(flag)
+        logger.info("Calibrated cross-feature noise (%d steps): NLL %.4f", steps, loss.item())
+        return loss.item()
 
     @torch.no_grad()
     def fit_latent_sampler(
@@ -325,18 +411,26 @@ class VAECopula(nn.Module):
             device: Compute device.
         """
         self.eval()
-        mus, log_vars = [], []
+        mus, log_vars, regimes = [], [], []
         for batch in dataloader:
             if isinstance(batch, (list, tuple)):
                 batch = batch[0]
-            mu, log_var = self.encoder(batch.to(device))
+            batch = batch.to(device)
+            mu, log_var = self.encoder(batch)
             mus.append(mu.cpu())
             log_vars.append(log_var.cpu())
+            if self.regime_driver is not None:
+                regimes.append(self.window_regime(batch).cpu())
         mu, log_var = torch.cat(mus), torch.cat(log_vars)
         self.posterior_mu = mu.to(self.copula_mean.device)
         self.posterior_log_var = log_var.to(self.copula_mean.device)
-        z = (mu + torch.exp(0.5 * log_var) * torch.randn_like(mu)).numpy()
-        copula = get_copula(self.copula_type, self.latent_dim, df=self.copula_df).fit(z)
+        z = mu + torch.exp(0.5 * log_var) * torch.randn_like(mu)
+        if regimes:
+            regime = torch.cat(regimes)
+            self.posterior_regime = regime.to(self.copula_mean.device)
+            z = torch.cat([z, regime[:, None]], dim=1)
+        z = z.numpy()
+        copula = get_copula(self.copula_type, z.shape[1], df=self.copula_df).fit(z)
         self.copula_corr.copy_(torch.as_tensor(copula.corr_matrix, dtype=torch.float32))
         self.copula_mean.copy_(torch.as_tensor(copula.marginal_means, dtype=torch.float32))
         self.copula_std.copy_(torch.as_tensor(copula.marginal_stds, dtype=torch.float32))
@@ -350,7 +444,7 @@ class VAECopula(nn.Module):
         self.fit_latent_sampler(dataloader, device)
 
     def _copula(self):
-        copula = get_copula(self.copula_type, self.latent_dim, df=self.copula_df)
+        copula = get_copula(self.copula_type, len(self.copula_mean), df=self.copula_df)
         copula.corr_matrix = self.copula_corr.cpu().double().numpy()
         copula.marginal_means = self.copula_mean.cpu().double().numpy()
         copula.marginal_stds = self.copula_std.cpu().double().numpy()
@@ -383,7 +477,8 @@ class VAECopula(nn.Module):
             num_samples: Number of sequences to generate.
             device: Compute device.
             temperature: Scales the latent spread (>1 = more diverse). For the
-                posterior sampler it scales each posterior's sigma.
+                posterior sampler it scales each posterior's sigma. With regime
+                conditioning it leaves the regime alone.
             use_copula: Legacy switch; False forces the prior sampler.
             sampler: "auto", "posterior", "copula" or "prior".
 
@@ -409,17 +504,29 @@ class VAECopula(nn.Module):
         if sampler == "copula" and not bool(self.copula_fitted):
             raise RuntimeError("Copula not fitted; call fit_latent_sampler() first.")
 
+        regime = None
+        if self.regime_driver is not None and sampler != "copula":
+            if len(self.posterior_regime) == 0:
+                raise RuntimeError("No stored regimes; call fit_latent_sampler() first.")
         if sampler == "posterior":
             idx = torch.randint(0, len(self.posterior_mu), (num_samples,))
             mu = self.posterior_mu[idx].to(device)
             std = torch.exp(0.5 * self.posterior_log_var[idx]).to(device)
             z = mu + temperature * std * torch.randn_like(mu)
+            if self.regime_driver is not None:
+                regime = self.posterior_regime[idx].to(device)
         elif sampler == "copula":
-            z = self._copula().sample_tensor(num_samples, device=device)
+            zr = self._copula().sample_tensor(num_samples, device=device)
             mean = self.copula_mean.to(device)
-            z = mean + (z - mean) * temperature
+            z = (mean + (zr - mean) * temperature)[:, : self.latent_dim]
+            if self.regime_driver is not None:
+                regime = zr[:, -1]
         else:
             z = torch.randn(num_samples, self.latent_dim, device=device) * temperature
+            if self.regime_driver is not None:
+                idx = torch.randint(0, len(self.posterior_regime), (num_samples,))
+                regime = self.posterior_regime[idx].to(device)
+        z = self._condition(z, regime)
         if self.recon_loss != "gaussian":
             return self.decoder(z)
         return self.decoder.sample(z)
