@@ -100,6 +100,13 @@ def model_kwargs_from_config(
                 and "LogReturn" in feature_names
                 else None
             ),
+            "regime_driver": (
+                list(feature_names).index("LogReturn")
+                if c.get("regime_conditioning", False)
+                and feature_names is not None
+                and "LogReturn" in feature_names
+                else None
+            ),
             "copula_type": copula.get("type", "gaussian"),
             "copula_df": float(copula.get("df", 4.0)),
         }

@@ -354,6 +354,15 @@ def test_factory_wires_magnitude_coupling():
     assert model_kwargs_from_config("vae_copula", 3, 10, {}, names)["magnitude_driver"] is None
 
 
+def test_factory_wires_regime_conditioning():
+    from synfin.models.factory import model_kwargs_from_config
+
+    names = ["OpenGap", "LogReturn", "LogVolumeRel"]
+    kw = model_kwargs_from_config("vae_copula", 3, 10, {"regime_conditioning": True}, names)
+    assert kw["regime_driver"] == 1
+    assert model_kwargs_from_config("vae_copula", 3, 10, {}, names)["regime_driver"] is None
+
+
 def test_correlated_noise_nll_matches_multivariate_normal():
     """Gaussian + mixing: each step is N(mean_t, D_t L L^T D_t) exactly."""
     from scipy.stats import multivariate_normal
@@ -501,3 +510,82 @@ def test_copula_factory():
     assert isinstance(t, StudentTCopula)
     with pytest.raises(ValueError):
         get_copula("unknown", 8)
+
+
+@pytest.mark.parametrize("sampler", ["posterior", "copula", "prior"])
+def test_regime_conditioning_reproduces_volatility_regimes(sampler):
+    """Window volatility varies 3x+ between windows; a useless latent can't carry it."""
+    rng = np.random.default_rng(2)
+    n, t = 512, 20
+    scale = np.exp(rng.normal(0.0, 0.5, n))[:, None, None]
+    data = torch.tensor(scale * rng.standard_normal((n, t, 2)), dtype=torch.float32)
+    loader = torch.utils.data.DataLoader(data, batch_size=64, shuffle=True)
+    torch.manual_seed(0)
+    vae = VAECopula(
+        input_dim=2,
+        hidden_dim=16,
+        latent_dim=3,
+        seq_length=t,
+        num_layers=1,
+        regime_driver=0,
+        kl_weight=5.0,  # keep the regime out of the latent
+    )
+    vae.training_step(
+        loader, torch.optim.Adam(vae.parameters(), lr=1e-2), epochs=25, kl_annealing=False
+    )
+    vae.fit_latent_sampler(loader)
+    assert vae.posterior_regime.shape == (n,)
+    real = np.log(data[:, :, 0].std(dim=1).numpy()).std()
+    synth = np.log(vae.generate(2000, sampler=sampler)[:, :, 0].std(dim=1).numpy()).std()
+    assert abs(synth / real - 1.0) < 0.15
+
+
+def test_regime_conditioning_state_round_trip():
+    """Stored regimes and the joint (z, r) copula survive a state_dict round trip."""
+    kwargs = dict(input_dim=2, hidden_dim=8, latent_dim=3, seq_length=10, num_layers=1)
+    vae = VAECopula(regime_driver=0, **kwargs)
+    loader = torch.utils.data.DataLoader(torch.randn(40, 10, 2), batch_size=16)
+    vae.fit_latent_sampler(loader)
+    assert vae.copula_mean.shape == (4,)
+    other = VAECopula(regime_driver=0, **kwargs)
+    other.load_state_dict(vae.state_dict())
+    assert torch.equal(other.posterior_regime, vae.posterior_regime)
+    assert other.generate(5).shape == (5, 10, 2)
+    with pytest.raises(ValueError):
+        VAECopula(regime_driver=2, **kwargs)
+
+
+def test_cross_feature_noise_calibration_reaches_true_coupling():
+    """Volume noise = 0.6 * standardized |return shock| + noise; a short run under-learns it."""
+    rng = np.random.default_rng(3)
+    n, t = 512, 20
+    r = rng.standard_normal((n, t))
+    h = (np.abs(r) - np.sqrt(2 / np.pi)) / np.sqrt(1 - 2 / np.pi)
+    v = 0.6 * h + 0.8 * rng.standard_normal((n, t))
+    data = torch.tensor(np.stack([r, v], axis=-1), dtype=torch.float32)
+    loader = torch.utils.data.DataLoader(data, batch_size=64, shuffle=True)
+    torch.manual_seed(0)
+    vae = VAECopula(
+        input_dim=2,
+        hidden_dim=8,
+        latent_dim=2,
+        seq_length=t,
+        num_layers=1,
+        ar_noise=False,
+        correlated_noise=True,
+        magnitude_driver=0,
+    )
+    vae.training_step(loader, torch.optim.Adam(vae.parameters(), lr=1e-3), epochs=2)
+    before = vae.decoder.magnitude_coupling()[1].item()
+    rho_before = vae.decoder.noise_rho().clone()
+    vae.calibrate_cross_feature_noise(loader, steps=200)
+    after = vae.decoder.magnitude_coupling()[1].item()
+    assert before < 0.4 and abs(after - 0.6) < 0.08
+    assert torch.equal(vae.decoder.noise_rho(), rho_before)
+    assert all(p.requires_grad for p in vae.parameters())
+    assert (
+        VAECopula(
+            input_dim=2, hidden_dim=8, latent_dim=2, seq_length=t, num_layers=1
+        ).calibrate_cross_feature_noise(loader)
+        is None
+    )
