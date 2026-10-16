@@ -24,7 +24,12 @@ from torch.utils.data import DataLoader
 from synfin.data.dataset import OHLCVDataset
 from synfin.data.download import load_ohlcv
 from synfin.data.preprocess import preprocess
-from synfin.models.factory import MODEL_NAMES, create_model, model_kwargs_from_config
+from synfin.models.factory import (
+    MODEL_NAMES,
+    create_model,
+    model_kwargs_from_config,
+    power_feature_params,
+)
 from synfin.training.checkpoint import save_checkpoint
 from synfin.training.trainer import Trainer, build_scheduler
 from synfin.utils.config import load_config
@@ -143,6 +148,13 @@ def main(argv=None) -> None:
     model_kwargs = model_kwargs_from_config(
         args.model, input_dim, seq_length, cfg.get("model", {}), data["feature_cols"]
     )
+    if args.model == "vae_copula" and cfg.get("model", {}).get("wick_transform", False):
+        model_kwargs["power_features"] = power_feature_params(
+            train_windows,
+            data["feature_cols"],
+            data["scaler_params"],
+            lam=cfg["model"].get("wick_lambda"),
+        )
     model = create_model(args.model, model_kwargs).to(device)
     logger.info("Model: %s (%d parameters)", args.model, sum(p.numel() for p in model.parameters()))
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional, Tuple
+from typing import Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
@@ -72,6 +72,17 @@ class VAECopula(nn.Module):
             middle, which thins tails (JPM: 99th-percentile window volatility
             3.7x the median vs 5.5x real). The likelihood is then conditional
             on r. Gaussian observation model only.
+        power_features: ``[index, lower_bound, offset, lambda]`` per bounded,
+            right-skewed feature (scaled units). The network models its Box-Cox
+            transform ``((x - lower_bound + offset)^lambda - 1) / lambda``
+            (log for lambda = 0). The candle wicks (HighRange, LowRange) are
+            >= 0 and heavily skewed: as symmetric noise around a mean near 0,
+            11-13% of generated wicks fell below 0 and were clipped to exactly
+            0 (real: ~2%). A plain log over-corrects (log-wicks are left-skewed,
+            so symmetric noise there gave wicks up to 7,000x the median); the
+            maximum-likelihood lambda (~0.1-0.2) makes them nearly symmetric.
+            The likelihood includes the Jacobian, so it stays a density of the
+            scaled data. Gaussian observation model only.
         magnitude_driver: Index of the return feature; couples every other
             feature's noise to the size of the return shock (e.g. volume rises
             on big moves). Gaussian observation model only.
@@ -98,6 +109,8 @@ class VAECopula(nn.Module):
         magnitude_driver: Optional[int] = None,
         correlated_noise: bool = False,
         regime_driver: Optional[int] = None,
+        power_features: Optional[Sequence[Sequence[float]]] = None,
+        regime_to_heads: bool = False,
     ) -> None:
         super().__init__()
         if recon_loss not in ("gaussian", "mse", "mae"):
@@ -122,6 +135,14 @@ class VAECopula(nn.Module):
         self.register_buffer("posterior_mu", torch.empty(0, latent_dim))
         self.register_buffer("posterior_log_var", torch.empty(0, latent_dim))
         self.register_buffer("posterior_regime", torch.empty(0))
+        pf = [list(map(float, f)) for f in (power_features or [])]
+        pf = pf if recon_loss == "gaussian" else []
+        self.register_buffer(
+            "power_feature_index", torch.tensor([int(f[0]) for f in pf], dtype=torch.long)
+        )
+        self.register_buffer("power_feature_bound", torch.tensor([f[1] for f in pf]))
+        self.register_buffer("power_feature_offset", torch.tensor([f[2] for f in pf]))
+        self.register_buffer("power_feature_lambda", torch.tensor([f[3] for f in pf]))
 
         self.encoder = Encoder(
             input_dim=input_dim,
@@ -145,6 +166,7 @@ class VAECopula(nn.Module):
             garch_noise=garch_noise and recon_loss == "gaussian",
             magnitude_driver=magnitude_driver if recon_loss == "gaussian" else None,
             correlated_noise=correlated_noise and recon_loss == "gaussian",
+            head_inputs=1 if self.regime_driver is not None and regime_to_heads else 0,
         )
 
     def reparameterize(self, mu: Tensor, log_var: Tensor) -> Tensor:
@@ -162,6 +184,48 @@ class VAECopula(nn.Module):
             eps = torch.randn_like(std)
             return mu + eps * std
         return mu
+
+    def _shifted(self, x: Tensor) -> Tensor:
+        """x - bound + offset for the power features (kept strictly positive)."""
+        shifted = x[..., self.power_feature_index] - self.power_feature_bound
+        return torch.clamp(
+            shifted + self.power_feature_offset, min=1e-3 * self.power_feature_offset
+        )
+
+    def to_model_space(self, x: Tensor) -> Tensor:
+        """Scaled data -> the space the network models (Box-Cox for ``power_features``)."""
+        if len(self.power_feature_index) == 0:
+            return x
+        lam, s = self.power_feature_lambda, self._shifted(x)
+        y = x.clone()
+        small = lam.abs() < 1e-6
+        safe = torch.where(small, torch.ones_like(lam), lam)
+        y[..., self.power_feature_index] = torch.where(
+            small, torch.log(s), (s.pow(safe) - 1.0) / safe
+        )
+        return y
+
+    def from_model_space(self, y: Tensor) -> Tensor:
+        """Inverse of :meth:`to_model_space`."""
+        if len(self.power_feature_index) == 0:
+            return y
+        lam, yp = self.power_feature_lambda, y[..., self.power_feature_index]
+        small = lam.abs() < 1e-6
+        safe = torch.where(small, torch.ones_like(lam), lam)
+        s = torch.where(
+            small, torch.exp(yp), torch.clamp(safe * yp + 1.0, min=1e-12).pow(1.0 / safe)
+        )
+        x = y.clone()
+        x[..., self.power_feature_index] = s - self.power_feature_offset + self.power_feature_bound
+        return x
+
+    def _log_jacobian(self, x: Tensor) -> Tensor:
+        """Per-element mean of log|dy/dx| for y = to_model_space(x) (0 if no transform)."""
+        if len(self.power_feature_index) == 0:
+            return x.new_zeros(())
+        # dy/dx = (x - bound + offset)^(lambda - 1)
+        log_dydx = (self.power_feature_lambda - 1.0) * torch.log(self._shifted(x))
+        return log_dydx.sum(dim=(1, 2)).mean() / (x.shape[1] * x.shape[2])
 
     def window_regime(self, x: Tensor) -> Tensor:
         """Volatility regime per window: log realized volatility of the driver, shape (batch,)."""
@@ -182,9 +246,10 @@ class VAECopula(nn.Module):
         Returns:
             Tuple of (x_recon, mu, log_var).
         """
-        mu, log_var = self.encoder(x)
+        y = self.to_model_space(x)
+        mu, log_var = self.encoder(y)
         z = self.reparameterize(mu, log_var)
-        regime = self.window_regime(x) if self.regime_driver is not None else None
+        regime = self.window_regime(y) if self.regime_driver is not None else None
         x_recon = self.decoder(self._condition(z, regime))
         return x_recon, mu, log_var
 
@@ -243,10 +308,12 @@ class VAECopula(nn.Module):
             x_recon, mu, log_var = self(x)
             return self.elbo_loss(x, x_recon, mu, log_var, kl_weight)
         beta = kl_weight if kl_weight is not None else self.kl_weight
-        mu, log_var = self.encoder(x)
+        y = self.to_model_space(x)
+        mu, log_var = self.encoder(y)
         z = self.reparameterize(mu, log_var)
-        regime = self.window_regime(x) if self.regime_driver is not None else None
-        recon = self.decoder.nll(x, self._condition(z, regime))
+        regime = self.window_regime(y) if self.regime_driver is not None else None
+        # NLL of x = NLL of y - log|dy/dx|.
+        recon = self.decoder.nll(y, self._condition(z, regime)) - self._log_jacobian(x)
         elements = x.shape[1] * x.shape[2]
         kl = (-0.5 * (1 + log_var - mu.pow(2) - log_var.exp()).sum(dim=1)).mean() / elements
         return recon + beta * kl, recon, kl
@@ -326,9 +393,11 @@ class VAECopula(nn.Module):
         super()._load_from_state_dict(
             state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
         )
-        # Checkpoints from before posterior sampling existed have no stored
-        # posteriors: keep the empty buffers ("auto" then uses the copula).
-        for name in names:
+        # Checkpoints from before posterior sampling (or log features) existed lack
+        # these buffers: keep them empty ("auto" then uses the copula; no transform).
+        power = ("index", "bound", "offset", "lambda")
+        optional = names + tuple(f"power_feature_{p}" for p in power)
+        for name in optional:
             if prefix + name in missing_keys:
                 missing_keys.remove(prefix + name)
 
@@ -366,7 +435,7 @@ class VAECopula(nn.Module):
             return None
         self.eval()
         batches = [b[0] if isinstance(b, (list, tuple)) else b for b in dataloader]
-        x = torch.cat(batches).to(device)
+        x = self.to_model_space(torch.cat(batches).to(device))
         with torch.no_grad():
             mu, log_var = self.encoder(x)
             regime = self.window_regime(x) if self.regime_driver is not None else None
@@ -415,7 +484,7 @@ class VAECopula(nn.Module):
         for batch in dataloader:
             if isinstance(batch, (list, tuple)):
                 batch = batch[0]
-            batch = batch.to(device)
+            batch = self.to_model_space(batch.to(device))
             mu, log_var = self.encoder(batch)
             mus.append(mu.cpu())
             log_vars.append(log_var.cpu())
@@ -529,4 +598,4 @@ class VAECopula(nn.Module):
         z = self._condition(z, regime)
         if self.recon_loss != "gaussian":
             return self.decoder(z)
-        return self.decoder.sample(z)
+        return self.from_model_space(self.decoder.sample(z))

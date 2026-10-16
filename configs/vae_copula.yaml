@@ -47,6 +47,20 @@ model:
   # MSFT 5.4 (real 5.45), AAPL 4.8 (real 4.7). The likelihood is then conditional
   # on the regime. The checkpoint stores one regime value per training window.
   regime_conditioning: true
+  # Model the candle wicks (HighRange, LowRange: >= 0, heavily skewed) after a
+  # Box-Cox transform with this lambda, instead of as symmetric noise around a mean
+  # near 0. Before, 11-13% of generated wicks were clipped to exactly 0 (real ~2%);
+  # with it 3-4.5%, wick tails match real, and the window discriminator score rises
+  # (AAPL 0.65 -> 0.88, JPM 0.80 -> 0.94, MSFT 0.79 -> 0.96). The maximum-likelihood
+  # lambda (~0.1-0.2, near a log) over-corrects: symmetric noise on that scale gives
+  # wicks up to thousands of times the median. See README.
+  wick_transform: true
+  wick_lambda: 0.4
+  # Feed the volatility regime straight into the output heads as well as the RNN.
+  # With compressed wicks the shared RNN state carried less crash-level signal, and
+  # JPM's crash-window return volatility fell to ~0.83 of realized (trimmed kurtosis
+  # 8.4 -> 6.2); with this it is 8.2 (real 9.8).
+  regime_to_heads: true
 
   # Latent copula, fitted to draws from the encoder's posteriors after training;
   # used when generation.latent_sampler is "copula".

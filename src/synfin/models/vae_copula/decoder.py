@@ -114,8 +114,10 @@ class Decoder(nn.Module):
         garch_noise: bool = False,
         magnitude_driver: Optional[int] = None,
         correlated_noise: bool = False,
+        head_inputs: int = 0,
     ) -> None:
         super().__init__()
+        self.head_inputs = head_inputs
         if correlated_noise and not heteroscedastic:
             raise ValueError("correlated_noise requires heteroscedastic=True.")
         if magnitude_driver is not None and not heteroscedastic:
@@ -149,8 +151,10 @@ class Decoder(nn.Module):
             batch_first=True,
             dropout=dropout if num_layers > 1 else 0.0,
         )
-        self.output_proj = nn.Linear(hidden_dim, output_dim)
-        self.log_var_proj = nn.Linear(hidden_dim, output_dim) if heteroscedastic else None
+        self.output_proj = nn.Linear(hidden_dim + head_inputs, output_dim)
+        self.log_var_proj = (
+            nn.Linear(hidden_dim + head_inputs, output_dim) if heteroscedastic else None
+        )
         # Unconstrained persistence; rho = MAX_ABS_RHO * tanh(raw), starting at 0.
         self.noise_rho_raw = nn.Parameter(torch.zeros(output_dim)) if ar_noise else None
         # Unconstrained tail parameter; df = MIN_DF + exp(raw), starting at INIT_DF. The log
@@ -349,7 +353,7 @@ class Decoder(nn.Module):
         Returns:
             Reconstructed (mean) sequences X̂, shape (batch, seq_length, output_dim).
         """
-        return self.output_proj(self._hidden(z))
+        return self.output_proj(self._head_input(z))
 
     def forward_dist(self, z: Tensor) -> tuple[Tensor, Tensor]:
         """Decode to the Gaussian observation model's (mean, log_var).
@@ -362,9 +366,17 @@ class Decoder(nn.Module):
         """
         if self.log_var_proj is None:
             raise RuntimeError("forward_dist requires heteroscedastic=True.")
-        out = self._hidden(z)
+        out = self._head_input(z)
         log_var = torch.clamp(self.log_var_proj(out), *self.LOG_VAR_RANGE)
         return self.output_proj(out), log_var
+
+    def _head_input(self, z: Tensor) -> Tensor:
+        """RNN states, plus the last ``head_inputs`` columns of z fed straight to the heads."""
+        out = self._hidden(z)
+        if self.head_inputs:
+            extra = z[:, -self.head_inputs :].unsqueeze(1).expand(-1, out.shape[1], -1)
+            out = torch.cat([out, extra], dim=-1)
+        return out
 
     def _hidden(self, z: Tensor) -> Tensor:
         """RNN hidden states for every output step."""
