@@ -1,6 +1,9 @@
 .PHONY: install install-dev download train train-timegan train-diffusion train-diffusion-ts train-vae generate evaluate pipeline structural-breaks smoke test lint format clean all help
 
 PYTHON := python
+# UTF-8 mode: on Windows, isort otherwise reads files with the locale code page and
+# silently skips any file containing non-ASCII characters.
+export PYTHONUTF8 := 1
 PIP := pip
 CONFIG_DIR := configs
 CHECKPOINT_DIR := checkpoints

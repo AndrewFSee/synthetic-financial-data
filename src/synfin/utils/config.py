@@ -33,7 +33,7 @@ def load_config(path: Union[str, Path], resolve_defaults: bool = True) -> Dict[s
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
 
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f) or {}
 
     if resolve_defaults and "defaults" in config:

@@ -180,12 +180,15 @@ synthetic-financial-data/
 git clone https://github.com/AndrewFSee/synthetic-financial-data.git
 cd synthetic-financial-data
 
-# Optional, CPU-only machines: the CPU build of PyTorch is far smaller
-pip install torch --index-url https://download.pytorch.org/whl/cpu
+# Optional: pick a PyTorch build before installing the package
+pip install torch --index-url https://download.pytorch.org/whl/cpu     # CPU-only machines (far smaller)
+pip install torch --index-url https://download.pytorch.org/whl/cu128   # NVIDIA GPUs; RTX 50-series needs CUDA 12.8+
 
 pip install -e .            # or: make install
 pip install -e ".[dev]"     # with tests, linters, Jupyter (make install-dev)
 ```
+
+Training uses the GPU automatically when one is available (`training.device: "auto"`); checkpoints trained on a GPU load and generate on CPU-only machines. On Windows, `make` usually isn't installed: every Makefile target is a thin wrapper around a `synfin-*` command (see [Makefile Reference](#makefile-reference)), and when running the linters by hand, set `PYTHONUTF8=1` so isort can read files containing non-ASCII characters.
 
 ---
 

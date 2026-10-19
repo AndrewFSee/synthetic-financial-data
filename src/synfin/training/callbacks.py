@@ -171,7 +171,7 @@ class LoggingCallback:
         self._file = None
         if log_file:
             Path(log_file).parent.mkdir(parents=True, exist_ok=True)
-            self._file = open(log_file, "a")
+            self._file = open(log_file, "a", encoding="utf-8")
 
     def __call__(self, epoch: int, metrics: Dict[str, float]) -> None:
         """Log metrics for the current epoch.
