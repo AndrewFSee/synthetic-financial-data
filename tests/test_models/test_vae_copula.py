@@ -589,3 +589,102 @@ def test_cross_feature_noise_calibration_reaches_true_coupling():
         ).calibrate_cross_feature_noise(loader)
         is None
     )
+
+
+def test_power_features_change_of_variables():
+    """Reconstruction NLL of x = NLL of the Box-Cox y minus log|dy/dx|; exact inverse."""
+    torch.manual_seed(8)
+    lam = 0.2
+    vae = VAECopula(
+        input_dim=2,
+        hidden_dim=8,
+        latent_dim=2,
+        seq_length=6,
+        num_layers=1,
+        power_features=[[1, -0.5, 0.1, lam]],
+    ).eval()
+    x = torch.randn(4, 6, 2)
+    x[..., 1] = torch.rand(4, 6) * 2.0 - 0.5
+    shifted = x[..., 1] + 0.5 + 0.1
+    y = vae.to_model_space(x)
+    assert torch.allclose(y[..., 1], (shifted**lam - 1) / lam)
+    assert torch.allclose(y[..., 0], x[..., 0])
+    assert torch.allclose(vae.from_model_space(y), x, atol=1e-5)
+    _, recon, _ = vae.negative_elbo(x)
+    mu, _ = vae.encoder(y)
+    expected = vae.decoder.nll(y, mu) - (lam - 1) * torch.log(shifted).sum() / x.numel()
+    assert recon.item() == pytest.approx(expected.item(), rel=1e-5)
+    log_vae = VAECopula(
+        input_dim=2,
+        hidden_dim=8,
+        latent_dim=2,
+        seq_length=6,
+        num_layers=1,
+        power_features=[[1, -0.5, 0.1, 0.0]],
+    )
+    assert torch.allclose(log_vae.to_model_space(x)[..., 1], torch.log(shifted))
+
+
+def test_power_features_keep_generated_wicks_positive_and_skewed():
+    """Exponential 'wicks' scaled by a per-step volatility: few zeros, right skew, sane tails."""
+    from scipy.stats import skew
+
+    from synfin.models.factory import power_feature_params
+
+    rng = np.random.default_rng(9)
+    n, t = 512, 20
+    vol = np.exp(rng.normal(0, 0.3, (n, t)))
+    wick = rng.exponential(1.0, (n, t)) * vol
+    data = np.stack([rng.standard_normal((n, t)) * vol, wick], axis=-1)
+    mean, sd = data.reshape(-1, 2).mean(0), data.reshape(-1, 2).std(0)
+    scaled = torch.tensor((data - mean) / sd, dtype=torch.float32)
+    loader = torch.utils.data.DataLoader(scaled, batch_size=64, shuffle=True)
+    params = power_feature_params(
+        scaled.numpy(), ["LogReturn", "HighRange"], {"center": mean, "scale": sd}
+    )
+    assert params[0][0] == 1.0 and params[0][1] == pytest.approx(-mean[1] / sd[1])
+    assert 0.0 < params[0][3] < 0.6  # maximum-likelihood lambda: close to a log
+    params = power_feature_params(
+        scaled.numpy(), ["LogReturn", "HighRange"], {"center": mean, "scale": sd}, lam=0.4
+    )
+
+    def generated_wicks(power_features):
+        torch.manual_seed(0)
+        vae = VAECopula(
+            input_dim=2,
+            hidden_dim=16,
+            latent_dim=2,
+            seq_length=t,
+            num_layers=1,
+            noise="student_t",
+            power_features=power_features,
+        )
+        vae.training_step(loader, torch.optim.Adam(vae.parameters(), lr=1e-2), epochs=20)
+        vae.fit_latent_sampler(loader)
+        return vae.generate(1000).numpy()[..., 1] * sd[1] + mean[1]
+
+    gen, plain = generated_wicks(params), generated_wicks(None)
+    assert np.mean(gen < 0) < 0.5 * np.mean(plain < 0)
+    assert skew(gen.ravel()) > 1.0
+    assert np.median(gen) == pytest.approx(np.median(wick), rel=0.2)
+    ratio = np.quantile(gen, 0.999) / np.median(gen)
+    assert ratio < 2.0 * np.quantile(wick, 0.999) / np.median(wick)
+
+
+def test_regime_to_heads_feeds_regime_into_output_heads():
+    """With regime_to_heads, the regime reaches the mean and log-variance heads directly."""
+    kwargs = dict(input_dim=2, hidden_dim=8, latent_dim=3, seq_length=6, num_layers=1)
+    vae = VAECopula(regime_driver=0, regime_to_heads=True, **kwargs)
+    assert vae.decoder.head_inputs == 1
+    assert vae.decoder.log_var_proj.in_features == 8 + 1
+    z = torch.zeros(2, 4)
+    z[1, -1] = 1.0  # same latent, different regime
+    with torch.no_grad():
+        # Cut the regime's paths into the RNN (input and initial state): only the heads see it.
+        vae.decoder.rnn.weight_ih_l0.zero_()
+        vae.decoder.fc_hidden.weight[:, -1] = 0.0
+        mean, log_var = vae.decoder.forward_dist(z)
+    w = vae.decoder.log_var_proj.weight[:, -1].detach()
+    assert torch.allclose(log_var[1] - log_var[0], w.expand_as(log_var[0]), atol=1e-5)
+    assert VAECopula(regime_driver=0, **kwargs).decoder.head_inputs == 0
+    assert VAECopula(regime_to_heads=True, **kwargs).decoder.head_inputs == 0

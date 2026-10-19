@@ -7,9 +7,13 @@ generation rebuilds the identical model with :func:`create_model`.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
+import numpy as np
 import torch.nn as nn
+
+# Bounded (>= 0), right-skewed features the VAE models after a Box-Cox transform.
+POWER_FEATURES = ("HighRange", "LowRange")
 
 MODEL_NAMES = ("timegan", "diffusion", "diffusion_ts", "vae_copula")
 
@@ -107,10 +111,41 @@ def model_kwargs_from_config(
                 and "LogReturn" in feature_names
                 else None
             ),
+            "regime_to_heads": c.get("regime_to_heads", False),
             "copula_type": copula.get("type", "gaussian"),
             "copula_df": float(copula.get("df", 4.0)),
         }
     raise ValueError(f"Unknown model {model_name!r}; use one of {MODEL_NAMES}.")
+
+
+def power_feature_params(
+    train_windows: np.ndarray,
+    feature_names: Sequence[str],
+    scaler: Dict[str, Sequence[float]],
+    offset_fraction: float = 0.1,
+    lam: Optional[float] = None,
+) -> List[List[float]]:
+    """``[index, lower_bound, offset, lambda]`` (scaled units) for ``power_features``.
+
+    The lower bound is raw 0 in scaled units; the offset is ``offset_fraction``
+    times the median positive (shifted) value in the training windows, so exact
+    zeros map to a finite value; lambda is ``lam`` if given, else the Box-Cox
+    maximum-likelihood estimate on the shifted training values (invariant to
+    the scaling).
+    """
+    from scipy.stats import boxcox
+
+    out = []
+    for name in POWER_FEATURES:
+        if name not in feature_names:
+            continue
+        i = list(feature_names).index(name)
+        bound = (0.0 - scaler["center"][i]) / scaler["scale"][i]
+        shifted = train_windows[..., i] - bound
+        offset = offset_fraction * float(np.median(shifted[shifted > 1e-9]))
+        lam_i = lam if lam is not None else boxcox(np.clip(shifted, 0.0, None).ravel() + offset)[1]
+        out.append([float(i), float(bound), offset, float(lam_i)])
+    return out
 
 
 def create_model(model_name: str, kwargs: Dict[str, Any]) -> nn.Module:

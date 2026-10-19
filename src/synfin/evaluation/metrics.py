@@ -253,6 +253,6 @@ def _save_report(report: Dict, output_dir: str) -> None:
         raise TypeError(f"Not serializable: {type(obj)}")
 
     report_path = path / "evaluation_report.json"
-    with open(report_path, "w") as f:
+    with open(report_path, "w", encoding="utf-8") as f:
         json.dump(report, f, default=_serialize, indent=2)
     logger.info("Evaluation report saved to %s", report_path)
